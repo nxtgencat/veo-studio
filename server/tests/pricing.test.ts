@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { estimateCost, ratePerSecond } from "../src/pricing.ts";
+import { estimateCost, fallbackEtaMs, measuredEtaMs, ratePerSecond } from "../src/pricing.ts";
 
 describe("pricing", () => {
   test("standard 1080p audio 8s = 3.20", () => {
@@ -82,5 +82,22 @@ describe("pricing", () => {
         sampleCount: 4,
       }),
     ).toBe(1.28);
+  });
+});
+
+describe("eta", () => {
+  test("measuredEtaMs takes the median of recent durations", () => {
+    expect(measuredEtaMs([])).toBeNull();
+    expect(measuredEtaMs([100_000])).toBe(100_000);
+    expect(measuredEtaMs([60_000, 120_000, 90_000])).toBe(90_000);
+    expect(measuredEtaMs([60_000, 120_000])).toBe(90_000);
+    expect(measuredEtaMs([-5, 0, NaN])).toBeNull();
+  });
+
+  test("fallbackEtaMs scales 4K and tiers", () => {
+    expect(fallbackEtaMs("Fast", "720p")).toBe(120_000);
+    expect(fallbackEtaMs("Standard", "1080p")).toBe(180_000);
+    expect(fallbackEtaMs("Standard", "4K")).toBe(270_000);
+    expect(fallbackEtaMs("Lite", "720p")).toBe(90_000);
   });
 });

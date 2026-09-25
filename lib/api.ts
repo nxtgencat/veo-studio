@@ -43,8 +43,10 @@ export interface ServerElement { id: string; project_id: string; category: strin
 export interface ServerJob {
   id: string; projectId: string; mode: string; model: string; prompt: string;
   resolution: string; aspect: string; durationSeconds: number; audio: boolean;
-  sampleCount: number; status: string; progress: number; error: string;
-  costEstimate: number; vertexOperation: string; createdAt: string; updatedAt: string;
+  sampleCount: number; seed?: number | null; status: string; progress: number; error: string;
+  costEstimate: number; vertexOperation: string; inputsJson: string;
+  elapsedMs: number; etaMs: number; etaSource: "measured" | "estimated";
+  createdAt: string; updatedAt: string;
 }
 export interface ServerVideo {
   id: string; project_id: string; job_id: string; mode: string; model: string;
@@ -58,7 +60,7 @@ export interface Capabilities {
     id: string; label: string; tier: string; stage: string; retires: boolean;
     audio: boolean; modes: string[]; durations: number[]; r2vDurations: number[];
     resolutions: string[]; aspects: string[]; fps: number; maxOutputs: number;
-    maxImageMB: number; maxRefs: number;
+    maxImageMB: number; maxRefs: number; quotaRpm: number | null;
   }[];
   modes: { id: string; label: string; desc: string }[];
   extend: { secondsPerCall: number; totalCapSeconds: number };

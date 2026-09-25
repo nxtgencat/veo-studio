@@ -220,6 +220,17 @@ Disabling audio roughly halves Standard cost — surface this in UI.
 `GET /models/capabilities` returns this table machine-readable so the UI can
 price live before submitting.
 
+## 6b. Crash semantics (server restart mid-generation)
+
+- Boot runs `recoverInterrupted()`: jobs WITH a Vertex operation resume
+  polling it (never resubmitted — no double spend); jobs WITHOUT one are
+  marked failed/`SERVER_RESTARTED` (Vertex was never called: no charge).
+- With bucket: Vertex finishes server-side into `gs://`; recovery archives
+  the output into the library as if nothing happened.
+- Without bucket: Vertex still completes and bills, but nobody fetched the
+  inline bytes — output is lost unless the LRO is still queryable at boot
+  (recovery polls it and archives when reachable).
+
 ## 7. Cancellation + billing on cancel
 
 - Vertex LROs expose **`operations.cancel`** (REST
@@ -250,6 +261,11 @@ price live before submitting.
 - Polling (headless contract): `POST /composer/jobs → { jobId }` (202),
   then `GET /jobs/:id` until `status: succeeded|failed|cancelled`.
   `GET /library` / `GET /library/:id` expose finished provenance.
+  Job payloads carry `elapsedMs`/`etaMs`/`etaSource`: the server records
+  Vertex submit time and completion durations, serving the measured median
+  of the last 20 successes per model (tier-typical fallback until then) —
+  there is no percent-complete API on Vertex LROs, so progress is
+  elapsed-vs-ETA, never fake precision.
 - Webhooks: Gemini API supports **webhooks for background execution**
   (`webhooks` docs); Vertex proper does not push — clients poll. Our server
   accepts optional `webhookUrl` on job creation and POSTs a signed

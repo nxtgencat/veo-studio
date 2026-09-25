@@ -3,11 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  Calendar, Check, MonitorPlay, RefreshCw, SkipBack, SkipForward, StretchHorizontal,
+  Calendar, Check, MonitorPlay, RefreshCw, RotateCcw, SkipBack, SkipForward, StretchHorizontal,
   Trash2,
 } from "lucide-react";
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
-import { ago, fullTs, money } from "@/lib/format";
+import { ago, fmtCountdown, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
 import { api } from "@/lib/api";
@@ -321,6 +321,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const router = useRouter();
   const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
   const addElement = useStudio((s) => s.addElement);
+  const loadIntoComposer = useStudio((s) => s.loadIntoComposer);
   const updateActive = useStudio((s) => s.updateActive);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", youtube: "", confirmDel: "" });
@@ -366,6 +367,25 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     close();
   };
 
+  const reload = () => {
+    const r = loadIntoComposer(v.id);
+    if (!r.ok) {
+      push(r.error ?? "Cannot reload", { icon: "!", tone: "danger" });
+      return;
+    }
+    close();
+    router.push(`/p/${project.id}/generate`);
+    if (r.missing?.length) {
+      push("Config reloaded — some inputs are gone", {
+        icon: "✦",
+        tone: "danger",
+        detail: r.missing.slice(0, 3).join(" · "),
+      });
+    } else {
+      push("Config reloaded into composer", { icon: "✦", detail: "Review and hit Generate when ready" });
+    }
+  };
+
   return (
     <SlateDialog
       onClose={close}
@@ -379,7 +399,9 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       }
       footer={
         <>
-          <span className="font-display font-bold text-[17px] tabular-nums mr-auto">{v.status === "success" ? money(v.cost) : "$0.00"}</span>
+          <span className="font-display font-bold text-[17px] tabular-nums mr-auto" title={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+            {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
+          </span>
           {v.status === "success" && (
             <>
               <SlateDropdown
@@ -408,6 +430,11 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
               </SlateButton>
             </>
           )}
+          {v.status !== "pending" && (
+            <SlateButton variant="ghost" size="sm" onClick={reload} title="Load this exact config back into the composer (no submit)">
+              <RotateCcw className="size-3.5" /> Reload
+            </SlateButton>
+          )}
           <SlateIconButton variant="quiet" size="icon-sm" label="Delete video" onClick={() => set({ confirmDel: v.id })}>
             <Trash2 className="size-3.5" />
           </SlateIconButton>
@@ -427,7 +454,9 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       ) : v.status === "pending" ? (
         <div className="rounded-[10px] border slate-hair p-5 text-center">
           <SlateProgress value={v.progress || 5} />
-          <p className="text-[12.5px] font-bold tabular-nums mt-2">{v.progress || 5}% rendering…</p>
+          <p className="text-[12.5px] font-bold tabular-nums mt-2" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+            {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
+          </p>
         </div>
       ) : (
         <div className="rounded-[10px] border slate-hair p-4 text-[12.5px] leading-relaxed" style={{ background: "var(--t-danger-bg)", color: "var(--t-danger-fg)" }}>

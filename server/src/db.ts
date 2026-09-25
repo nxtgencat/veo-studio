@@ -52,6 +52,8 @@ export function migrate(d: Database) {
       cost_estimate REAL NOT NULL DEFAULT 0,
       vertex_operation TEXT NOT NULL DEFAULT '',
       webhook_url TEXT NOT NULL DEFAULT '',
+      submitted_at TEXT NOT NULL DEFAULT '',
+      duration_ms INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(project_id, idempotency_key)
@@ -99,6 +101,14 @@ export function migrate(d: Database) {
   const cols = d.query("PRAGMA table_info(library)").all() as { name: string }[];
   if (!cols.some((c) => c.name === "gcs_uri")) {
     d.exec("ALTER TABLE library ADD COLUMN gcs_uri TEXT NOT NULL DEFAULT ''");
+  }
+  const jobCols = d.query("PRAGMA table_info(jobs)").all() as { name: string }[];
+  // Vertex submit time + completed duration (ms) — powers measured ETAs.
+  if (!jobCols.some((c) => c.name === "submitted_at")) {
+    d.exec("ALTER TABLE jobs ADD COLUMN submitted_at TEXT NOT NULL DEFAULT ''");
+  }
+  if (!jobCols.some((c) => c.name === "duration_ms")) {
+    d.exec("ALTER TABLE jobs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0");
   }
 }
 

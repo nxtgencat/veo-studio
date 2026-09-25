@@ -26,6 +26,7 @@ export interface UiModel {
   silent: boolean;
   retires: boolean;
   preview: boolean;
+  quotaRpm: number | null;
 }
 
 const FALLBACK: UiModel = {
@@ -40,6 +41,7 @@ const FALLBACK: UiModel = {
   silent: false,
   retires: false,
   preview: false,
+  quotaRpm: null,
 };
 
 export const modelOf = (id: string): UiModel => {
@@ -64,6 +66,7 @@ export const modelOf = (id: string): UiModel => {
     silent: !m.audio,
     retires: m.retires,
     preview: m.stage === "Preview",
+    quotaRpm: m.quotaRpm ?? null,
   };
 };
 

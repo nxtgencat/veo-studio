@@ -37,7 +37,7 @@ export default function VideoDeepLinkPage() {
           <ModeBadge mode={v.mode} />
           <StatusBadge status={v.status} />
           <SlateBadge tone="draft">{v.dur}s · {v.res} · {v.aspect}</SlateBadge>
-          <span className="ml-auto font-mono text-[12px] text-fg2">{v.status === "success" ? money(v.cost) : "$0.00"}</span>
+          <span className="ml-auto font-mono text-[12px] text-fg2">{v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}</span>
         </div>
         {v.url ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption

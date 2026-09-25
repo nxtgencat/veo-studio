@@ -7,6 +7,7 @@ import { getModel } from "./capabilities.ts";
 import { getSettings, resolveAuth } from "./auth.ts";
 import { downloadGcsUri } from "./gcs.ts";
 import { elementImageBytes, IMAGE_MAX_BYTES } from "./images.ts";
+import { fallbackEtaMs, measuredEtaMs } from "./pricing.ts";
 import { getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
 import { estimateCost } from "./pricing.ts";
 import { validateJob, type JobInput } from "./validation.ts";
@@ -141,7 +142,7 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
   return { ok: true, jobId: id, deduped: false };
 }
 
-async function runInBackground(jobId: string) {
+async function runInBackground(jobId: string, resumeOp?: string) {
   const db = getDb();
   const row = db.query("SELECT * FROM jobs WHERE id = ?").get(jobId) as any;
   if (!row || row.status !== "queued") return;
@@ -156,6 +157,12 @@ async function runInBackground(jobId: string) {
   }
 
   try {
+    if (resumeOp) {
+      // Crash recovery: the Vertex operation already exists — poll it,
+      // never resubmit (resubmitting would double-spend).
+      await pollUntilDone(jobId, resumeOp, d);
+      return;
+    }
     const params: vertex.VertexSubmitParams = {
       model: row.model,
       prompt: row.prompt,
@@ -242,8 +249,8 @@ async function runInBackground(jobId: string) {
       }
     }
     const opName = await d.submit(params);
-    db.query("UPDATE jobs SET vertex_operation=?, progress=15, updated_at=? WHERE id=?").run(
-      opName, nowIso(), jobId,
+    db.query("UPDATE jobs SET vertex_operation=?, submitted_at=?, progress=15, updated_at=? WHERE id=?").run(
+      opName, nowIso(), nowIso(), jobId,
     );
     await pollUntilDone(jobId, opName, d);
   } catch (e: any) {
@@ -251,6 +258,41 @@ async function runInBackground(jobId: string) {
     log.error({ jobId, err: msg }, "job failed at submit");
     failJob(jobId, e?.code ? `${e.code}: ${msg}` : msg);
   }
+}
+
+/**
+ * Crash recovery, called once at boot. Jobs interrupted mid-flight:
+ * - with a Vertex operation → resume polling it (never resubmit: no double spend).
+ * - without one → failed/SERVER_RESTARTED (Vertex was never called: no charge).
+ * Returns counts for the boot log.
+ */
+export async function recoverInterrupted(): Promise<{ resumed: number; expired: number }> {
+  const db = getDb();
+  const rows = db.query("SELECT id, vertex_operation FROM jobs WHERE status IN ('queued','running')").all() as {
+    id: string;
+    vertex_operation: string;
+  }[];
+  let resumed = 0;
+  let expired = 0;
+  for (const r of rows) {
+    if (r.vertex_operation) {
+      db.query("UPDATE jobs SET status='queued', updated_at=? WHERE id=?").run(nowIso(), r.id);
+      log.info({ jobId: r.id, op: r.vertex_operation }, "resuming interrupted job");
+      const task = runInBackground(r.id, r.vertex_operation);
+      inflight.add(task);
+      void task
+        .catch((e) => log.error({ jobId: r.id, err: String(e) }, "recovered task crashed"))
+        .finally(() => inflight.delete(task));
+      resumed++;
+    } else {
+      failJob(
+        r.id,
+        "SERVER_RESTARTED: server restarted before this job reached Vertex — nothing was generated, no charge. Resubmit to try again.",
+      );
+      expired++;
+    }
+  }
+  return { resumed, expired };
 }
 
 function authErrorHint(projectId: string): string {
@@ -325,24 +367,52 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
   const db = getDb();
   const maxAttempts = Number(process.env.JOB_POLL_ATTEMPTS ?? 120);
   const intervalMs = Number(process.env.JOB_POLL_MS ?? 5000);
+  let notFoundStreak = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await Bun.sleep(intervalMs);
-    const cur = db.query("SELECT status FROM jobs WHERE id=?").get(jobId) as any;
+    const cur = db.query("SELECT status, model, resolution, submitted_at FROM jobs WHERE id=?").get(jobId) as any;
     if (!cur || cur.status === "cancelled") return;
+    // Progress is elapsed-vs-ETA: it advances even when individual polls fail,
+    // so the bar never freezes at 15 while the ETA counts down.
+    const { etaMs } = jobEta(cur.model, cur.resolution);
+    const elapsed = cur.submitted_at ? Math.max(0, Date.now() - Date.parse(cur.submitted_at)) : 0;
+    const progress = etaMs > 0 ? Math.min(95, 5 + Math.round((elapsed / etaMs) * 90)) : 15;
+    db.query("UPDATE jobs SET progress=?, updated_at=? WHERE id=?").run(progress, nowIso(), jobId);
     try {
       const op = await d.get(opName);
-      const progress = Math.min(15 + Math.round(((i + 1) / maxAttempts) * 80), 95);
-      db.query("UPDATE jobs SET progress=?, updated_at=? WHERE id=?").run(progress, nowIso(), jobId);
+      notFoundStreak = 0;
       if (op.done) {
         if (op.error) failJob(jobId, op.error);
         else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes);
         return;
       }
     } catch (e: any) {
-      log.error({ jobId, err: e?.message }, "poll error (will retry)");
+      if ((e as { status?: number })?.status === 404) {
+        // Google doesn't transiently 404 existing resources: the operation is gone.
+        notFoundStreak++;
+        log.error({ jobId, opName, streak: notFoundStreak }, "operation not found on Vertex");
+        if (notFoundStreak >= 5) {
+          failJob(
+            jobId,
+            `VERTEX_OP_GONE: Vertex reports operation ${opName} as not found (404 ×5). ` +
+              "It may have expired — otherwise check VERTEXAI_LOCATION matches the submit region " +
+              "and the service-account project owns the operation. No output was produced, no charge.",
+          );
+          return;
+        }
+      } else {
+        notFoundStreak = 0;
+        log.error({ jobId, err: e?.message }, "poll error (will retry)");
+      }
     }
   }
   failJob(jobId, "POLL_TIMEOUT: Vertex operation did not complete in time; poll GET /jobs/:id to retry later");
+}
+
+function stampDuration(jobId: string, submittedAt: string): number {
+  const ms = submittedAt ? Date.now() - Date.parse(submittedAt) : 0;
+  getDb().query("UPDATE jobs SET duration_ms=? WHERE id=?").run(ms, jobId);
+  return ms;
 }
 
 async function succeedJob(
@@ -355,6 +425,7 @@ async function succeedJob(
   if (!row) return;
   const now = nowIso();
   db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
+  stampDuration(jobId, row.submitted_at);
   const gs = videoUris.find((u) => u.startsWith("gs://")) ?? "";
   const stored = await materializeOutput(row.project_id, gs, inline);
   const libId = Bun.randomUUIDv7();
@@ -404,6 +475,7 @@ function failJob(jobId: string, error: string) {
     const db = getDb();
     const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
     db.query("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(error, nowIso(), jobId);
+    if (row?.submitted_at) stampDuration(jobId, row.submitted_at);
     log.error({ jobId, error }, "job failed");
     if (row?.webhook_url) fireWebhook(row.webhook_url, { jobId, status: "failed", error });
   } catch (e) {
@@ -459,6 +531,26 @@ export async function cancelJob(jobId: string): Promise<
   db.query("UPDATE jobs SET status='cancelled', updated_at=? WHERE id=?").run(nowIso(), jobId);
   log.info({ jobId }, "job cancelled (no output => no per-second charge)");
   return { ok: true, status: "cancelled" };
+}
+
+/** ETA for a model: measured median of recent successes, else tier fallback. */
+export function jobEta(modelId: string, resolution: string): { etaMs: number; source: "measured" | "estimated" } {
+  const model = getModel(modelId);
+  const rows = getDb()
+    .query("SELECT duration_ms FROM jobs WHERE model=? AND status='succeeded' AND duration_ms > 0 ORDER BY created_at DESC LIMIT 20")
+    .all(modelId) as { duration_ms: number }[];
+  const measured = measuredEtaMs(rows.map((r) => r.duration_ms));
+  if (measured) return { etaMs: measured, source: "measured" };
+  const tier = (model?.tier ?? "Fast") as "Standard" | "Fast" | "Lite" | "Legacy";
+  const res = (resolution === "4K" ? "4K" : resolution === "1080p" ? "1080p" : "720p") as "720p" | "1080p" | "4K";
+  return { etaMs: fallbackEtaMs(tier, res), source: "estimated" };
+}
+
+/** Elapsed ms since Vertex submit (0 before submit / for legacy rows). */
+export function jobElapsedMs(row: { submitted_at?: string; status: string; duration_ms?: number }): number {
+  if ((row.status === "succeeded" || row.status === "failed") && row.duration_ms) return row.duration_ms;
+  if (!row.submitted_at) return 0;
+  return Math.max(0, Date.now() - Date.parse(row.submitted_at));
 }
 
 export function getJob(jobId: string) {

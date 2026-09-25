@@ -8,7 +8,7 @@ import {
   Volume2, VolumeX, WandSparkles, X,
 } from "lucide-react";
 import { EL_CATS, MODES } from "@/lib/catalog";
-import { money } from "@/lib/format";
+import { fmtCountdown, fmtElapsed, money } from "@/lib/format";
 import { allModels, modelOf, priceFor } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
@@ -239,10 +239,15 @@ export function GenerateView() {
                       {v.prompt || "Untitled"}
                     </p>
                     {v.status === "pending" ? (
-                      <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
+                      <>
+                        <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
+                        <p className="text-[11.5px] font-mono text-muted mt-1.5" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+                          {money(v.cost)} est. · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
+                        </p>
+                      </>
                     ) : (
-                      <p className="text-[11.5px] font-mono text-muted mt-1.5">
-                        {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : (v.error || "failed").slice(0, 90)}
+                      <p className="text-[11.5px] font-mono text-muted mt-1.5" title={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+                        {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : v.status === "failed" ? (<><s>{money(v.cost)}</s> · {(v.error || "failed").slice(0, 90)}</>) : (v.error || "failed").slice(0, 90)}
                       </p>
                     )}
                   </div>
@@ -471,14 +476,17 @@ export function GenerateView() {
                 <SlateDropdown
                   label={g.res}
                   title="Resolution"
-                  menu={(close) => ["720p", "1080p", "4K"].map((r) => (
-                    <SlateOption
-                      key={r} active={g.res === r} disabled={!(m.res as readonly string[]).includes(r)} note="N/A"
-                      onPick={() => updateActive((d) => { d.gen.res = r as "720p" | "1080p" | "4K"; })} onClose={close}
-                    >
-                      {r}
-                    </SlateOption>
-                  ))}
+                  menu={(close) => ["720p", "1080p", "4K"].map((r) => {
+                    const dis = !(m.res as readonly string[]).includes(r);
+                    return (
+                      <SlateOption
+                        key={r} active={g.res === r} disabled={dis} note={dis ? "N/A" : undefined}
+                        onPick={() => updateActive((d) => { d.gen.res = r as "720p" | "1080p" | "4K"; })} onClose={close}
+                      >
+                        {r}
+                      </SlateOption>
+                    );
+                  })}
                 />
                 <SlateDropdown
                   label={g.aspect}
@@ -493,15 +501,18 @@ export function GenerateView() {
                 <SlateDropdown
                   label={`${g.dur}s`}
                   title="Duration"
-                  menu={(close) => [4, 5, 6, 7, 8].map((d) => (
-                    <SlateOption
-                      key={d} active={g.dur === d}
-                      disabled={!(m.dur as readonly number[]).includes(d) || (g.mode === "r2v" && d !== 8)} note="N/A"
-                      onPick={() => updateActive((draft) => { draft.gen.dur = d; })} onClose={close}
-                    >
-                      {d}s
-                    </SlateOption>
-                  ))}
+                  menu={(close) => [4, 5, 6, 7, 8].map((d) => {
+                    const dis = !(m.dur as readonly number[]).includes(d) || (g.mode === "r2v" && d !== 8);
+                    return (
+                      <SlateOption
+                        key={d} active={g.dur === d}
+                        disabled={dis} note={dis ? "N/A" : undefined}
+                        onPick={() => updateActive((draft) => { draft.gen.dur = d; })} onClose={close}
+                      >
+                        {d}s
+                      </SlateOption>
+                    );
+                  })}
                 />
                 <SlateIconButton
                   size="icon-sm"

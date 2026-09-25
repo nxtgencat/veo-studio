@@ -3,6 +3,7 @@
 export const MODELS = [
   {
     id: "veo-3.1-generate-001",
+    quotaRpm: 50,
     label: "Veo 3.1",
     tier: "Standard" as const,
     stage: "GA" as const,
@@ -20,6 +21,7 @@ export const MODELS = [
   },
   {
     id: "veo-3.1-fast-generate-001",
+    quotaRpm: 50,
     label: "Veo 3.1 Fast",
     tier: "Fast" as const,
     stage: "GA" as const,
@@ -37,6 +39,7 @@ export const MODELS = [
   },
   {
     id: "veo-3.1-lite-generate-001",
+    quotaRpm: 50,
     label: "Veo 3.1 Lite",
     tier: "Lite" as const,
     stage: "Preview" as const,
@@ -54,6 +57,7 @@ export const MODELS = [
   },
   {
     id: "veo-3.0-generate-001",
+    quotaRpm: 10,
     label: "Veo 3",
     tier: "Standard" as const,
     stage: "GA" as const,
@@ -72,6 +76,7 @@ export const MODELS = [
   },
   {
     id: "veo-3.0-fast-generate-001",
+    quotaRpm: 10,
     label: "Veo 3 Fast",
     tier: "Fast" as const,
     stage: "GA" as const,
@@ -90,6 +95,7 @@ export const MODELS = [
   },
   {
     id: "veo-2.0-generate-001",
+    quotaRpm: null as number | null,
     label: "Veo 2",
     tier: "Legacy" as const,
     stage: "GA" as const,
@@ -135,3 +141,5 @@ export function capabilitiesSnapshot() {
     extend: { secondsPerCall: EXTEND_SECONDS, totalCapSeconds: EXTEND_TOTAL_CAP },
   };
 }
+
+

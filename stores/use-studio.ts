@@ -89,25 +89,41 @@ function elementImg(elements: ServerElement[], id: string | undefined): string {
   return elements.find((e) => e.id === id)?.image_url ?? "";
 }
 
+interface RawInputs {
+  imageAssetId?: string;
+  firstFrameAssetId?: string;
+  lastFrameAssetId?: string;
+  refAssetIds?: string[];
+  sourceVideoId?: string;
+}
+
+function mapInputs(raw: RawInputs, elements: ServerElement[]): VideoItem["inputs"] {
+  const inputs: VideoItem["inputs"] = {
+    image: elementImg(elements, raw.imageAssetId) || undefined,
+    first: elementImg(elements, raw.firstFrameAssetId) || undefined,
+    last: elementImg(elements, raw.lastFrameAssetId) || undefined,
+    refs: (raw.refAssetIds ?? []).map((id) => elementImg(elements, id)).filter(Boolean),
+    extendVideo: raw.sourceVideoId,
+  };
+  if (!inputs.refs?.length) delete inputs.refs;
+  return inputs;
+}
+
+function parseRawInputs(json: string): RawInputs {
+  try {
+    return JSON.parse(json || "{}") as RawInputs;
+  } catch {
+    return {};
+  }
+}
+
 function toVideoItem(
   v: ServerVideo,
   elements: ServerElement[],
   youtube: Record<string, NonNullable<VideoItem["youtube"]>>,
 ): VideoItem {
   let inputs: VideoItem["inputs"] = {};
-  try {
-    const raw = JSON.parse(v.inputs_json || "{}") as {
-      imageAssetId?: string; firstFrameAssetId?: string; lastFrameAssetId?: string;
-      refAssetIds?: string[];
-    };
-    inputs = {
-      image: elementImg(elements, raw.imageAssetId) || undefined,
-      first: elementImg(elements, raw.firstFrameAssetId) || undefined,
-      last: elementImg(elements, raw.lastFrameAssetId) || undefined,
-      refs: (raw.refAssetIds ?? []).map((id) => elementImg(elements, id)).filter(Boolean),
-    };
-    if (!inputs.refs?.length) delete inputs.refs;
-  } catch { /* keep empty */ }
+  inputs = mapInputs(parseRawInputs(v.inputs_json), elements);
   return {
     id: v.id,
     jobId: v.job_id,
@@ -144,23 +160,25 @@ function toVideoItem(
 function jobToVideoItem(
   j: ServerJob,
   elements: ServerElement[],
-  prompt: string,
 ): VideoItem {
-  // Inputs for in-flight jobs aren't refetchable; show config from the job row.
+  const inputs = mapInputs(parseRawInputs(j.inputsJson ?? "{}"), elements);
   return {
     id: j.id,
     jobId: j.id,
     mode: toWebMode(j.mode),
-    prompt: j.prompt || prompt,
+    prompt: j.prompt,
     model: j.model,
     res: j.resolution,
     aspect: j.aspect,
     dur: j.durationSeconds,
     audio: j.audio,
-    seed: "",
+    seed: typeof j.seed === "number" ? j.seed : "",
     person: "allow_adult",
     enhance: false,
     batch: 1,
+    elapsedMs: j.elapsedMs ?? 0,
+    etaMs: j.etaMs,
+    etaSource: j.etaSource,
     status: j.status === "failed" ? "failed" : j.status === "cancelled" ? "failed" : "pending",
     progress: j.status === "failed" || j.status === "cancelled" ? 100 : j.progress || 5,
     cost: j.status === "succeeded" ? j.costEstimate : j.status === "failed" || j.status === "cancelled" ? 0 : j.costEstimate,
@@ -168,7 +186,7 @@ function jobToVideoItem(
     thumb: "",
     url: "",
     error: j.status === "cancelled" ? "Cancelled before completion — not billed." : j.error || "",
-    inputs: {},
+    inputs,
     youtube: undefined,
   };
 }
@@ -207,6 +225,7 @@ interface StudioState {
   deleteProject: (id: string) => Promise<void>;
   setActiveId: (id: string | null) => void;
   attachElement: (cat: ElementCat, img: string) => void;
+  loadIntoComposer: (videoId: string) => { ok: boolean; error?: string; missing?: string[] };
   addElement: (cat: ElementCat, data: { name: string; imageUrl: string; note: string }) => Promise<{ ok: boolean; error?: string }>;
   deleteElement: (id: string) => Promise<void>;
   setYoutube: (videoId: string, patch: Record<string, unknown>) => void;
@@ -229,7 +248,7 @@ function buildProjects(
       ...libs.map((v) => toVideoItem(v, els, local.youtube)),
       ...pjobs
         .filter((j) => j.status === "queued" || j.status === "running" || j.status === "failed" || j.status === "cancelled")
-        .map((j) => jobToVideoItem(j, els, "")),
+        .map((j) => jobToVideoItem(j, els)),
     ].sort((a, b) => b.createdAt - a.createdAt);
     const grouped: Project["elements"] = { characters: [], locations: [], assets: [], frames: [] };
     for (const e of els) {
@@ -665,6 +684,67 @@ export const useStudio = create<StudioState>()((set, get) => {
         g.refs = r.slice(0, 3);
         g.dur = 8;
       });
+    },
+
+    // Reload a library video's exact config into the composer. Never submits.
+    // Inputs that no longer resolve (deleted elements, expired session files)
+    // are reported so the user can re-attach them.
+    loadIntoComposer: (videoId) => {
+      const p = get().activeProject();
+      if (!p) return { ok: false, error: "No active project." };
+      const v = p.library.find((x) => x.id === videoId);
+      if (!v) return { ok: false, error: "Video is gone from the library." };
+      const missing: string[] = [];
+      const need = (label: string, url?: string): string => {
+        if (!url) {
+          missing.push(label);
+          return "";
+        }
+        if (url.startsWith("blob:")) {
+          missing.push(`${label} (session file expired — re-upload)`);
+          return "";
+        }
+        return url;
+      };
+      // Only the slots this mode actually uses — a t2v clip has no frames
+      // to miss, and must not report any.
+      const wantImage = v.mode === "i2v";
+      const wantFrames = v.mode === "frames";
+      const wantRefs = v.mode === "r2v";
+      const model = v.model === "import" ? (local.drafts[p.id]?.model ?? defaultGen().model) : v.model;
+      const gen: GenDraft = {
+        mode: v.mode,
+        model,
+        res: v.res as GenDraft["res"],
+        aspect: v.aspect as GenDraft["aspect"],
+        dur: v.dur,
+        audio: v.audio,
+        batch: 1,
+        seed: v.seed ?? "",
+        person: "allow_adult",
+        enhance: true,
+        prompt: v.prompt,
+        image: wantImage ? need("image", v.inputs.image) : "",
+        first: wantFrames ? need("first frame", v.inputs.first) : "",
+        last: wantFrames ? need("last frame", v.inputs.last) : "",
+        refs: wantRefs ? (v.inputs.refs ?? []).map((r, i) => need(`reference ${i + 1}`, r)).filter(Boolean) : [],
+        extendVideo: "",
+      };
+      if (v.mode === "extend") {
+        const src = v.inputs.extendVideo;
+        if (src && p.library.some((x) => x.id === src)) gen.extendVideo = src;
+        else missing.push("source video (deleted — pick another)");
+      }
+      // Normalize against the (possibly different) model, like live edits do.
+      const m = modelOf(gen.model);
+      if (!(m.res as readonly string[]).includes(gen.res)) gen.res = (m.res[0] ?? "720p") as GenDraft["res"];
+      if (!(m.dur as readonly number[]).includes(gen.dur)) gen.dur = m.dur[m.dur.length - 1] ?? 8;
+      if (gen.mode === "r2v") gen.dur = 8;
+      if (m.silent) gen.audio = false;
+      local.drafts[p.id] = gen;
+      persist();
+      rebuild({});
+      return { ok: true, missing };
     },
 
     addElement: async (cat, data) => {

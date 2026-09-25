@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { Clapperboard, Database, Film, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
 import { TABS } from "@/lib/catalog";
 import { money } from "@/lib/format";
-import { pendingOf, spendOf } from "@/lib/pricing";
+import { modelOf, pendingOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateSidebar, SlateSidebarDrawer, SlateSidebarTrigger } from "@/components/slate/sidebar";
@@ -27,6 +27,8 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
 
   const totalPending = projects.reduce((a, q) => a + pendingOf(q), 0);
   const firstRunning = projects.find((x) => pendingOf(x) > 0);
+  const region = useStudio((s) => s.caps?.defaults.region ?? "us-central1");
+  const rpm = active ? modelOf(active.gen.model).quotaRpm : null;
 
   if (!active) {
     return (
@@ -151,7 +153,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           <span className="font-mono">{active.settings.bucket ? `gs://${active.settings.bucket}` : "no bucket"}</span>
         </span>
         <span className="ml-auto hidden md:flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#2A8F58]" /> us-central1 · 50 RPM / model
+          <span className="w-1.5 h-1.5 rounded-full bg-[#2A8F58]" /> {region}{rpm ? ` · ${rpm} RPM / model` : " · quotas vary by model"}
         </span>
       </footer>
 

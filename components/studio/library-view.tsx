@@ -4,8 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "lucide-react";
-import { money } from "@/lib/format";
-import { ago, fullTs } from "@/lib/format";
+import { ago, fmtCountdown, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureVideo } from "@/lib/media";
 import { api } from "@/lib/api";
@@ -207,7 +206,9 @@ export function LibraryView() {
                 {v.status === "pending" && (
                   <div className="absolute inset-0 bg-black/45 p-2.5 sm:p-4 flex flex-col justify-end gap-1.5">
                     <SlateProgress value={v.progress || 5} />
-                    <p className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums">{v.progress || 5}% rendering…</p>
+                    <p className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+                      {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)}
+                    </p>
                   </div>
                 )}
                 <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 hidden min-[420px]:inline-flex">
@@ -228,8 +229,8 @@ export function LibraryView() {
                 </p>
                 <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
                   <StatusBadge status={v.status} />
-                  <span className="text-[11px] sm:text-[12px] font-mono text-fg2">
-                    {v.status === "success" ? money(v.cost) : "$0.00"}
+                  <span className="text-[11px] sm:text-[12px] font-mono text-fg2" title={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+                    {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
                   </span>
                 </div>
               </div>

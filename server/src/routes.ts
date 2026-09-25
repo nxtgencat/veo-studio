@@ -11,7 +11,7 @@ import { BACKUP_MAX_BYTES, buildBackup, parseBackup, restoreBackup } from "./bac
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
-import { cancelJob, createJob, getJob } from "./jobs.ts";
+import { cancelJob, createJob, getJob, jobElapsedMs, jobEta } from "./jobs.ts";
 import { extractFrames } from "./frames.ts";
 import { logger } from "./logger.ts";
 
@@ -309,6 +309,7 @@ app.post("/jobs/:id/cancel", async (c) => {
 });
 
 function formatJob(row: any) {
+  const { etaMs, source } = jobEta(row.model, row.resolution);
   return {
     id: row.id,
     projectId: row.project_id,
@@ -320,11 +321,16 @@ function formatJob(row: any) {
     durationSeconds: row.duration_seconds,
     audio: !!row.audio,
     sampleCount: row.sample_count,
+    seed: row.seed,
     status: row.status,
     progress: row.progress,
     error: row.error,
     costEstimate: row.cost_estimate,
     vertexOperation: row.vertex_operation,
+    inputsJson: row.inputs_json ?? "{}",
+    elapsedMs: jobElapsedMs(row),
+    etaMs,
+    etaSource: source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

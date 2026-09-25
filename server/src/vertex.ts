@@ -172,10 +172,18 @@ export async function vertexGet(name: string, ctx: VertexCtx): Promise<VertexOpe
   const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.token}` } });
   if (!res.ok) {
     const text = await res.text();
-    throw Object.assign(new Error(`Vertex get failed: ${res.status} ${text.slice(0, 500)}`), {
-      code: "E_VERTEX_GET",
-      status: res.status,
-    });
+    const isHtml = /<!DOCTYPE|<html/i.test(text.slice(0, 200));
+    throw Object.assign(
+      new Error(
+        isHtml
+          ? `Vertex returned an HTML ${res.status} page for ${name} — usually a wrong region in the operation URL or an expired/deleted operation`
+          : `Vertex get failed: ${res.status} ${text.slice(0, 500)}`,
+      ),
+      {
+        code: "E_VERTEX_GET",
+        status: res.status,
+      },
+    );
   }
   const json = (await res.json()) as { done?: boolean; error?: { message?: string }; response?: unknown };
   const uris = json.done ? collectVideoUris(json.response) : [];

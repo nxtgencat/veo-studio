@@ -55,6 +55,9 @@ export const youtubeStateSchema = z.object({
 export const videoItemSchema = z.object({
   id: z.string().min(1),
   jobId: z.string().optional(),
+  elapsedMs: z.number().optional(),
+  etaMs: z.number().optional(),
+  etaSource: z.enum(["measured", "estimated"]).optional(),
   mode: generationModeSchema,
   prompt: z.string(),
   model: z.string(),

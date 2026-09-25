@@ -57,6 +57,28 @@ export function estimateCost(params: {
   return round2(rate * params.durationSeconds * count);
 }
 
+// Typical wall-clock per generation (community-measured ranges: Lite 1–2m,
+// Fast 1–3m, Standard 2–5m; 4K runs hotter). Used only until measured data exists.
+const TIER_ETA_MS: Record<string, number> = {
+  Lite: 90_000,
+  Fast: 120_000,
+  Standard: 180_000,
+  Legacy: 120_000,
+};
+
+export function fallbackEtaMs(tier: Tier, resolution: Resolution): number {
+  const base = TIER_ETA_MS[tier] ?? 120_000;
+  return resolution === "4K" ? Math.round(base * 1.5) : base;
+}
+
+/** Median of recent successful durations for a model, else null. */
+export function measuredEtaMs(recentDurationsMs: number[]): number | null {
+  const xs = recentDurationsMs.filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const mid = Math.floor(xs.length / 2);
+  return xs.length % 2 ? (xs[mid] ?? null) : Math.round(((xs[mid - 1] ?? 0) + (xs[mid] ?? 0)) / 2);
+}
+
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }

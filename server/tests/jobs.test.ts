@@ -8,6 +8,7 @@ process.env.JOB_POLL_ATTEMPTS = "50";
 process.env.MEDIA_DIR = join(tmpdir(), `veo-media-jobs-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
+import { app } from "../src/routes.ts";
 import { cancelJob, createJob, getJob, setDriverForTests, settleBackground } from "../src/jobs.ts";
 import type { JobInput } from "../src/validation.ts";
 
@@ -219,6 +220,88 @@ describe("async job flow", () => {
     }
     expect((getJob(r.jobId) as any).status).toBe("failed");
     expect((getJob(r.jobId) as any).error).toContain("FRAMES_ASPECT_MISMATCH");
+    setDriverForTests(null);
+  });
+
+  test("crash recovery resumes ops and expires unsubmitted jobs", async () => {
+    const { recoverInterrupted } = await import("../src/jobs.ts");
+    const now = new Date().toISOString();
+    const db = getDb();
+    // Running WITH an op → resumed via driver (no resubmit).
+    let submitted = 0;
+    setDriverForTests({
+      submit: async () => {
+        submitted++;
+        return "operations/recovered";
+      },
+      get: async () => ({ name: "operations/recovered", done: true, videoUris: [] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    db.query(
+      `INSERT INTO jobs (id, project_id, idempotency_key, mode, model, prompt, resolution, aspect,
+        duration_seconds, audio, sample_count, inputs_json, status, progress, cost_estimate, vertex_operation, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run("job_crash_op", "prj_test", "k-crash-1", "t2v", "veo-3.1-fast-generate-001", "p", "720p", "16:9",
+      8, 1, 1, "{}", "running", 15, 0.8, "operations/recovered", now, now);
+    // Queued WITHOUT an op → expired, never submitted.
+    db.query(
+      `INSERT INTO jobs (id, project_id, idempotency_key, mode, model, prompt, resolution, aspect,
+        duration_seconds, audio, sample_count, inputs_json, status, progress, cost_estimate, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run("job_crash_noop", "prj_test", "k-crash-2", "t2v", "veo-3.1-fast-generate-001", "p", "720p", "16:9",
+      8, 1, 1, "{}", "queued", 0, 0.8, now, now);
+    const rec = await recoverInterrupted();
+    expect(rec).toEqual({ resumed: 1, expired: 1 });
+    expect(submitted).toBe(0);
+    await settleBackground();
+    expect((getJob("job_crash_op") as any).status).toBe("succeeded");
+    const dead = getJob("job_crash_noop") as any;
+    expect(dead.status).toBe("failed");
+    expect(dead.error).toContain("SERVER_RESTARTED");
+    setDriverForTests(null);
+  });
+
+  test("job payloads carry elapsed + eta timing", async () => {
+    const r = createJob(base, "key-timing");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const res = await app.request(`/jobs/${r.jobId}`);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      status: string;
+      elapsedMs: number;
+      etaMs: number;
+      etaSource: string;
+    };
+    expect(typeof json.elapsedMs).toBe("number");
+    // No successes recorded yet → tier fallback for Fast 720p.
+    expect(json.etaMs).toBe(120_000);
+    expect(json.etaSource).toBe("estimated");
+    setDriverForTests(null);
+  });
+
+  test("repeated Vertex 404s fail fast with guidance", async () => {
+    setDriverForTests({
+      submit: async () => "operations/gone",
+      get: async () => {
+        throw Object.assign(new Error("Vertex returned an HTML 404 page"), {
+          code: "E_VERTEX_GET",
+          status: 404,
+        });
+      },
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob(base, "key-gone");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
+      await Bun.sleep(20);
+    }
+    const failed = getJob(r.jobId) as any;
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain("VERTEX_OP_GONE");
+    expect(failed.error).toContain("operations/gone");
     setDriverForTests(null);
   });
 
