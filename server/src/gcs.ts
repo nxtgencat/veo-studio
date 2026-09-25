@@ -24,9 +24,12 @@ export interface BucketCheck {
 }
 
 export async function checkBucket(bucket: string, token: string): Promise<BucketCheck> {
+  // NB: repeated `permissions` params — comma-joined is rejected with 400.
+  const query = new URLSearchParams();
+  for (const p of PROBE) query.append("permissions", p);
   const probeUrl =
     `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}` +
-    `/iam/testPermissions?permissions=${PROBE.join(",")}`;
+    `/iam/testPermissions?${query.toString()}`;
   let probe: Response;
   try {
     probe = await fetch(probeUrl, { headers: { Authorization: `Bearer ${token}` } });

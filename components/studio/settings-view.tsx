@@ -80,7 +80,7 @@ export function SettingsView() {
         );
       },
       (e) => {
-        push("Bucket save failed — kept previous value", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
+        push("Bucket save failed — kept previous value", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e) });
       },
     ).finally(() => setBktBusy(false));
   };

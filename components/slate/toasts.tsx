@@ -102,7 +102,7 @@ function SlateToastList() {
             />
             <ToastPrimitive.Description
               data-slot="toast-description"
-              className="text-[12px] font-normal text-muted mt-0.5 truncate"
+              className="text-[12px] font-normal text-muted mt-0.5 break-words line-clamp-4"
             />
           </div>
           <ToastPrimitive.Close

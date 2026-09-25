@@ -33,7 +33,8 @@ export function toast(msg: string, opts?: ToastOptions): string {
     description: opts?.detail,
     type: TYPE_FOR_TONE[tone],
     priority: tone === "danger" ? "high" : "low",
-    timeout: 4200,
+    // Danger toasts carry full error text — give them time to be read.
+    timeout: tone === "danger" ? 9000 : 4200,
     data: { icon: opts?.icon, tone },
   });
 }
