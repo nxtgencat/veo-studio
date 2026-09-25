@@ -1,253 +1,635 @@
 "use client";
 
 import { create } from "zustand";
-import { blankGen, blankProject, seedStudio } from "@/mock/studio.mock";
-import { SAMPLE_VIDEOS } from "@/mock/catalog.mock";
-import { clamp, pic, uid } from "@/lib/format";
-import { modelOf, priceFor, rateFor } from "@/lib/pricing";
-import type { ElementCat, GenDraft, Project, VideoItem } from "@/lib/schemas";
+import { api } from "@/lib/api";
+import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
+import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
+import type {
+  ElementCat,
+  ElementItem,
+  GenDraft,
+  Project,
+  VideoItem,
+} from "@/lib/schemas";
 
-const LS = "aivs-state-v1";
+// ---------- local-only overlays (gen drafts, settings, youtube) ----------
+const LS = "veo-web-v1";
 
-function cloneProject(q: Project): Project {
+interface LocalOverlays {
+  activeId: string | null;
+  drafts: Record<string, GenDraft>;
+  settings: Record<string, Project["settings"]>;
+  youtube: Record<string, NonNullable<VideoItem["youtube"]>>;
+}
+
+function defaultGen(): GenDraft {
   return {
-    ...q,
-    gen: { ...q.gen, refs: [...(q.gen.refs || [])] },
-    library: q.library.map((v) => ({
-      ...v,
-      inputs: v.inputs
-        ? { ...v.inputs, refs: v.inputs.refs ? [...v.inputs.refs] : v.inputs.refs }
-        : {},
-      youtube: v.youtube ? { ...v.youtube } : undefined,
-    })),
-    elements: {
-      characters: [...q.elements.characters],
-      locations: [...q.elements.locations],
-      assets: [...q.elements.assets],
-      frames: [...q.elements.frames],
-    },
-    settings: { ...q.settings },
+    mode: "t2v",
+    model: "veo-3.1-fast-generate-001",
+    res: "1080p",
+    aspect: "16:9",
+    dur: 8,
+    audio: true,
+    batch: 1,
+    seed: "",
+    person: "allow_adult",
+    enhance: true,
+    prompt: "",
+    image: "",
+    first: "",
+    last: "",
+    refs: [],
+    extendVideo: "",
   };
 }
 
-function loadInitial(): { projects: Project[]; activeId: string | null } {
-  if (typeof window === "undefined") return seedStudio();
-  try {
-    const raw = localStorage.getItem(LS);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d && Array.isArray(d.projects)) {
-        for (const p of d.projects) {
-          p.settings = p.settings ?? {};
-          if (p.settings.ytClientId == null) p.settings.ytClientId = "";
-          if (!p.settings.ytPrivacy) p.settings.ytPrivacy = "unlisted";
-          if (!p.settings.ytCategory) p.settings.ytCategory = "22";
-          for (const v of p.library ?? []) {
-            if (v.imported && v.url && String(v.url).startsWith("blob:")) v.url = "";
-          }
-        }
-        return { projects: d.projects, activeId: d.activeId ?? d.projects[0]?.id ?? null };
-      }
-    }
-  } catch { /* seed fallback */ }
-  return seedStudio();
+function defaultSettings(): Project["settings"] {
+  return {
+    saJson: "",
+    bucket: "",
+    useBucket: true,
+    authMode: "service_account",
+    ytClientId: "",
+    ytPrivacy: "unlisted",
+    ytCategory: "22",
+  };
 }
 
-function persist(projects: Project[], activeId: string | null) {
+function loadLocal(): LocalOverlays {
+  const empty: LocalOverlays = { activeId: null, drafts: {}, settings: {}, youtube: {} };
+  if (typeof window === "undefined") return empty;
   try {
-    localStorage.setItem(LS, JSON.stringify({ projects, activeId }));
+    const raw = localStorage.getItem(LS);
+    if (!raw) return empty;
+    const d = JSON.parse(raw) as Partial<LocalOverlays>;
+    return {
+      activeId: typeof d.activeId === "string" ? d.activeId : null,
+      drafts: d.drafts && typeof d.drafts === "object" ? d.drafts : {},
+      settings: d.settings && typeof d.settings === "object" ? d.settings : {},
+      youtube: d.youtube && typeof d.youtube === "object" ? d.youtube : {},
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function saveLocal(o: LocalOverlays) {
+  try {
+    localStorage.setItem(LS, JSON.stringify(o));
   } catch { /* quota — ignore */ }
 }
 
+// ---------- server → UI mapping ----------
+const toWebMode = (m: string): VideoItem["mode"] => (m === "f2v" ? "frames" : (m as VideoItem["mode"]));
+const toServerMode = (m: string): string => (m === "frames" ? "f2v" : m);
+
+function elementImg(elements: ServerElement[], id: string | undefined): string {
+  if (!id) return "";
+  return elements.find((e) => e.id === id)?.image_url ?? "";
+}
+
+function toVideoItem(
+  v: ServerVideo,
+  elements: ServerElement[],
+  youtube: Record<string, NonNullable<VideoItem["youtube"]>>,
+  blobUrls: Record<string, string>,
+): VideoItem {
+  let inputs: VideoItem["inputs"] = {};
+  try {
+    const raw = JSON.parse(v.inputs_json || "{}") as {
+      imageAssetId?: string; firstFrameAssetId?: string; lastFrameAssetId?: string;
+      refAssetIds?: string[];
+    };
+    inputs = {
+      image: elementImg(elements, raw.imageAssetId) || undefined,
+      first: elementImg(elements, raw.firstFrameAssetId) || undefined,
+      last: elementImg(elements, raw.lastFrameAssetId) || undefined,
+      refs: (raw.refAssetIds ?? []).map((id) => elementImg(elements, id)).filter(Boolean),
+    };
+    if (!inputs.refs?.length) delete inputs.refs;
+  } catch { /* keep empty */ }
+  return {
+    id: v.id,
+    jobId: v.job_id,
+    mode: toWebMode(v.mode),
+    prompt: v.prompt,
+    model: v.model,
+    res: v.resolution,
+    aspect: v.aspect,
+    dur: v.duration_seconds,
+    audio: !!v.audio,
+    seed: "",
+    person: "allow_adult",
+    enhance: false,
+    batch: 1,
+    status: "success",
+    progress: 100,
+    cost: v.cost_estimate ?? 0,
+    createdAt: Date.parse(v.created_at) || Date.now(),
+    thumb: v.thumb_url || "",
+    url: blobUrls[v.id] ?? (v.video_url || ""),
+    imported: v.model === "import" ? true : undefined,
+    error: "",
+    inputs,
+    youtube: youtube[v.id],
+  };
+}
+
+function jobToVideoItem(
+  j: ServerJob,
+  elements: ServerElement[],
+  prompt: string,
+): VideoItem {
+  // Inputs for in-flight jobs aren't refetchable; show config from the job row.
+  return {
+    id: j.id,
+    jobId: j.id,
+    mode: toWebMode(j.mode),
+    prompt: j.prompt || prompt,
+    model: j.model,
+    res: j.resolution,
+    aspect: j.aspect,
+    dur: j.durationSeconds,
+    audio: j.audio,
+    seed: "",
+    person: "allow_adult",
+    enhance: false,
+    batch: 1,
+    status: j.status === "failed" ? "failed" : j.status === "cancelled" ? "failed" : "pending",
+    progress: j.status === "failed" || j.status === "cancelled" ? 100 : j.progress || 5,
+    cost: j.status === "succeeded" ? j.costEstimate : j.status === "failed" || j.status === "cancelled" ? 0 : j.costEstimate,
+    createdAt: Date.parse(j.createdAt) || Date.now(),
+    thumb: "",
+    url: "",
+    error: j.status === "cancelled" ? "Cancelled before completion — not billed." : j.error || "",
+    inputs: {},
+    youtube: undefined,
+  };
+}
+
+// ---------- store ----------
+interface SrvProject { id: string; name: string; createdAt: number }
+
 interface StudioState {
+  srvProjects: SrvProject[];
+  srvSettings: Record<string, ServerSettings>;
+  elements: ServerElement[];
+  library: ServerVideo[];
+  jobs: ServerJob[];
+  caps: Capabilities | null;
+  capsReady: boolean;
+  serverUp: boolean;
+  lastError: string;
   projects: Project[];
   activeId: string | null;
   hydrated: boolean;
-  hydrate: () => void;
+  refreshing: boolean;
+  serverSettings: (projectId: string) => ServerSettings | undefined;
+  hydrate: () => Promise<void>;
+  retry: () => Promise<void>;
+  ensureLoaded: (projectId: string) => Promise<void>;
+  refreshActive: () => Promise<void>;
+  pollJobs: () => Promise<void>;
   activeProject: () => Project | undefined;
   updateActive: (fn: (draft: Project) => void) => { ok: boolean; error?: string };
-  queueGeneration: () => { ok: boolean; error?: string; count?: number };
-  tickRenders: () => void;
-  importVideo: (v: VideoItem) => void;
-  deleteVideo: (id: string) => void;
-  createProject: (name: string) => string;
-  renameProject: (id: string, name: string) => void;
-  deleteProject: (id: string) => void;
+  queueGeneration: () => Promise<{ ok: boolean; error?: string; count?: number }>;
+  importVideo: (a: { prompt: string; res: string; aspect: string; dur: number; thumbDataUrl: string; blobUrl: string }) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  deleteVideo: (id: string) => Promise<void>;
+  createProject: (name: string) => Promise<string>;
+  renameProject: (id: string, name: string) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
   setActiveId: (id: string | null) => void;
   attachElement: (cat: ElementCat, img: string) => void;
+  addElement: (cat: ElementCat, data: { name: string; imageUrl: string; note: string }) => Promise<{ ok: boolean; error?: string }>;
+  deleteElement: (id: string) => Promise<void>;
+  setYoutube: (videoId: string, patch: Record<string, unknown>) => void;
+  saveSettings: (patch: Partial<Project["settings"]>) => Promise<void>;
 }
 
-export const useStudio = create<StudioState>()((set, get) => ({
-  projects: [],
-  activeId: null,
-  hydrated: false,
-
-  hydrate: () => {
-    if (get().hydrated) return;
-    const init = loadInitial();
-    set({ ...init, hydrated: true });
-  },
-
-  activeProject: () => {
-    const { projects, activeId } = get();
-    return projects.find((x) => x.id === activeId) ?? projects[0];
-  },
-
-  updateActive: (fn) => {
-    const { projects, activeId } = get();
-    if (!activeId) return { ok: false, error: "No active project." };
-    const next = projects.map((q) => (q.id === activeId ? cloneProject(q) : q));
-    const target = next.find((x) => x.id === activeId);
-    if (!target) return { ok: false, error: "Project not found." };
-    fn(target);
-    // Normalize draft constraints (mirrors reference auto-fix behavior)
-    const m = modelOf(target.gen.model);
-    const resList = (m.res ?? []) as readonly string[];
-    const durList = (m.dur ?? []) as readonly number[];
-    if (!resList.includes(target.gen.res)) target.gen.res = (resList[0] ?? "720p") as GenDraft["res"];
-    if (!durList.includes(target.gen.dur)) target.gen.dur = durList[durList.length - 1] ?? 8;
-    if (target.gen.mode === "r2v") target.gen.dur = 8;
-    if ("silent" in m && m.silent) target.gen.audio = false;
-    set({ projects: next });
-    persist(next, activeId);
-    return { ok: true };
-  },
-
-  queueGeneration: () => {
-    const p = get().activeProject();
-    if (!p) return { ok: false, error: "No active project." };
-    const g = p.gen;
-    const m = modelOf(g.model);
-    // Inline validation (same rules as lib/pricing.validateGen, kept here to avoid extra import cycle)
-    if (!g.prompt.trim()) return { ok: false, error: "Write a prompt first." };
-    if (g.mode === "i2v" && !g.image) return { ok: false, error: "Image mode needs 1 image." };
-    if (g.mode === "frames" && (!g.first || !g.last)) return { ok: false, error: "Frames mode needs first + last frame." };
-    if (g.mode === "r2v") {
-      if (!("ref" in m && m.ref)) return { ok: false, error: `${m.label} has no reference mode.` };
-      if (!g.refs.filter(Boolean).length) return { ok: false, error: "Reference mode needs 1–3 reference images." };
-    }
-    if (g.mode === "extend") {
-      if (!("ext" in m && m.ext)) return { ok: false, error: `${m.label} cannot extend.` };
-      if (!g.extendVideo) return { ok: false, error: "Pick a source video." };
-      const s = p.library.find((x) => x.id === g.extendVideo);
-      if (!s) return { ok: false, error: "Source video is gone — pick another." };
-      if (!s.url) return { ok: false, error: "Source file is gone after reload — re-upload it." };
-      if (s.dur > 30) return { ok: false, error: `Source is ${s.dur}s — Extend inputs must be ≤ 30s.` };
-    }
-    if (g.mode === "frames" && !("flf" in m && m.flf)) return { ok: false, error: `${m.label} has no frames mode.` };
-
-    const unit = priceFor(g.model, g.res, g.dur, g.audio, 1);
-    let count = 0;
-    get().updateActive((draft) => {
-      for (let i = 0; i < g.batch; i++) {
-        const dur = g.mode === "extend" ? 7 : g.dur;
-        const audio = "silent" in m && m.silent ? false : g.audio;
-        const v: VideoItem = {
-          id: uid("vid"), mode: g.mode, prompt: g.prompt.trim(), model: g.model,
-          res: g.res, aspect: g.aspect, dur, audio,
-          seed: g.seed === "" ? "" : Number(g.seed), person: g.person, enhance: g.enhance, batch: g.batch,
-          status: "pending", progress: 5, createdAt: Date.now(), thumb: "", url: "", error: "",
-          cost: g.mode === "extend" ? (rateFor(g.model, g.res, audio) || 0) * 7 : unit || 0,
-          inputs: {
-            image: g.image || undefined, first: g.first || undefined, last: g.last || undefined,
-            refs: g.refs.filter(Boolean).slice().length ? g.refs.filter(Boolean).slice() : undefined,
-            extendVideo: g.extendVideo || undefined,
-          },
-        };
-        v.thumb = v.inputs.image || v.inputs.first || (v.inputs.refs || [])[0] || pic(v.id, 640, 360);
-        if (g.mode === "extend") {
-          const s = draft.library.find((x) => x.id === g.extendVideo);
-          if (s) v.thumb = s.thumb;
-        }
-        draft.library.unshift(v);
-        count++;
+function buildProjects(
+  srv: SrvProject[],
+  elements: ServerElement[],
+  library: ServerVideo[],
+  jobs: ServerJob[],
+  srvSettings: Record<string, ServerSettings>,
+  local: LocalOverlays,
+  blobUrls: Record<string, string>,
+): Project[] {
+  return srv.map((p) => {
+    const els = elements.filter((e) => e.project_id === p.id);
+    const libs = library.filter((v) => v.project_id === p.id);
+    const pjobs = jobs.filter((j) => j.projectId === p.id);
+    const items: VideoItem[] = [
+      ...libs.map((v) => toVideoItem(v, els, local.youtube, blobUrls)),
+      ...pjobs
+        .filter((j) => j.status === "queued" || j.status === "running" || j.status === "failed" || j.status === "cancelled")
+        .map((j) => jobToVideoItem(j, els, "")),
+    ].sort((a, b) => b.createdAt - a.createdAt);
+    const grouped: Project["elements"] = { characters: [], locations: [], assets: [], frames: [] };
+    for (const e of els) {
+      const item: ElementItem = { id: e.id, name: e.name, img: e.image_url, note: e.note };
+      if (e.category === "characters" || e.category === "locations" || e.category === "assets" || e.category === "frames") {
+        grouped[e.category].push(item);
       }
-    });
-    return { ok: true, count };
-  },
+    }
+    // Server owns auth/bucket; browser keeps YouTube OAuth bits. SA key never
+    // comes back down — hasSaJson/saEmail tell the UI what's configured.
+    const srvCfg = srvSettings[p.id];
+    const yt = local.settings[p.id];
+    return {
+      id: p.id,
+      name: p.name,
+      createdAt: p.createdAt,
+      gen: local.drafts[p.id] ?? defaultGen(),
+      library: items,
+      elements: grouped,
+      settings: {
+        saJson: "",
+        bucket: srvCfg?.bucket ?? "",
+        useBucket: srvCfg?.useBucket ?? true,
+        authMode: srvCfg?.authMode ?? "service_account",
+        ytClientId: yt?.ytClientId ?? "",
+        ytPrivacy: yt?.ytPrivacy ?? "unlisted",
+        ytCategory: yt?.ytCategory ?? "22",
+      },
+    };
+  });
+}
 
-  tickRenders: () => {
-    const { projects, activeId } = get();
-    let changed = false;
-    const next = projects.map((q) => ({
-      ...q,
-      library: q.library.map((v) => {
-        if (v.status !== "pending") return v;
-        changed = true;
-        const pr = clamp((v.progress || 5) + 7 + Math.random() * 10, 5, 97);
-        if (pr >= 97) {
-          const fail = Math.random() < 0.08;
-          return {
-            ...v, progress: 100, status: (fail ? "failed" : "success") as VideoItem["status"],
-            cost: fail ? 0 : v.cost,
-            url: fail ? "" : v.url || SAMPLE_VIDEOS[Math.floor(Math.random() * SAMPLE_VIDEOS.length)],
-            error: fail ? "RESOURCE_EXHAUSTED: quota exceeded. Retry with backoff." : "",
-          };
+export const useStudio = create<StudioState>()((set, get) => {
+  let local = loadLocal();
+  let blobUrls: Record<string, string> = {};
+  const loaded = new Set<string>();
+
+  const persist = () => saveLocal(local);
+
+  const rebuild = (patch: Partial<StudioState>) => {
+    const s = get();
+    const projects = buildProjects(s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local, blobUrls);
+    set({ ...patch, projects });
+  };
+
+  const errOf = (e: unknown): string =>
+    e instanceof Error ? e.message : String(e ?? "Request failed");
+
+  async function fetchScope(projectId: string) {
+    const [els, libs, jobs, cfg] = await Promise.all([
+      api.listElements(projectId),
+      api.listLibrary(projectId),
+      api.listJobs(projectId),
+      api.getSettings(projectId),
+    ]);
+    const s = get();
+    set({
+      elements: [...s.elements.filter((e) => e.project_id !== projectId), ...els.elements],
+      library: [...s.library.filter((v) => v.project_id !== projectId), ...libs.videos],
+      jobs: [...s.jobs.filter((j) => j.projectId !== projectId), ...jobs.jobs],
+      srvSettings: { ...s.srvSettings, [projectId]: cfg },
+    });
+    loaded.add(projectId);
+    rebuild({});
+  }
+
+  return {
+    srvProjects: [],
+    srvSettings: {},
+    elements: [],
+    library: [],
+    jobs: [],
+    caps: null,
+    capsReady: false,
+    serverUp: true,
+    lastError: "",
+    projects: [],
+    activeId: null,
+    hydrated: false,
+    refreshing: false,
+
+    hydrate: async () => {
+      if (get().hydrated) return;
+      local = loadLocal();
+      try {
+        const [caps, projs] = await Promise.all([api.capabilities(), api.listProjects()]);
+        setCapabilities(caps);
+        const srv: SrvProject[] = projs.projects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          createdAt: Date.parse(p.created_at) || Date.now(),
+        }));
+        set({ caps, capsReady: true, srvProjects: srv, serverUp: true, lastError: "" });
+        if (!srv.length) {
+          const created = await api.createProject("Untitled project");
+          const one: SrvProject = { id: created.id, name: created.name, createdAt: Date.parse(created.created_at) || Date.now() };
+          set({ srvProjects: [one] });
+          local.activeId = one.id;
+        } else if (!local.activeId || !srv.some((p) => p.id === local.activeId)) {
+          local.activeId = srv[0]?.id ?? null;
         }
-        return { ...v, progress: Math.round(pr) };
-      }),
-    }));
-    if (!changed) return;
-    set({ projects: next });
-    persist(next, activeId);
-  },
-
-  importVideo: (v) => {
-    get().updateActive((draft) => {
-      draft.library.unshift(v);
-    });
-  },
-
-  deleteVideo: (id) => {
-    get().updateActive((draft) => {
-      draft.library = draft.library.filter((x) => x.id !== id);
-    });
-  },
-
-  createProject: (name) => {
-    const q = blankProject(name.trim() || "Project");
-    // Preserve current gen defaults shape
-    q.gen = blankGen();
-    const next = [q, ...get().projects];
-    set({ projects: next, activeId: q.id });
-    persist(next, q.id);
-    return q.id;
-  },
-
-  renameProject: (id, name) => {
-    const next = get().projects.map((x) => (x.id === id ? { ...x, name } : x));
-    set({ projects: next });
-    persist(next, get().activeId);
-  },
-
-  deleteProject: (id) => {
-    const projects = get().projects.filter((x) => x.id !== id);
-    const activeId = get().activeId === id ? (projects[0]?.id ?? null) : get().activeId;
-    set({ projects, activeId });
-    persist(projects, activeId);
-  },
-
-  setActiveId: (id) => {
-    set({ activeId: id });
-    persist(get().projects, id);
-  },
-
-  attachElement: (cat, img) => {
-    get().updateActive((draft) => {
-      const g = draft.gen;
-      if (cat === "frames") {
-        if (!g.first) g.first = img;
-        else if (!g.last) g.last = img;
-        else { g.first = g.last; g.last = img; }
-        return;
+        persist();
+        set({ activeId: local.activeId });
+        if (local.activeId) await fetchScope(local.activeId).catch(() => {});
+        rebuild({ hydrated: true });
+      } catch (e) {
+        set({ hydrated: true, serverUp: false, lastError: errOf(e) });
       }
+    },
+
+    retry: async () => {
+      set({ hydrated: false });
+      await get().hydrate();
+    },
+
+    ensureLoaded: async (projectId: string) => {
+      if (loaded.has(projectId)) return;
+      await fetchScope(projectId).catch((e) => set({ lastError: errOf(e) }));
+    },
+
+    refreshActive: async () => {
+      const id = get().activeId;
+      if (!id) return;
+      set({ refreshing: true });
+      try {
+        await fetchScope(id);
+      } catch (e) {
+        set({ lastError: errOf(e) });
+      } finally {
+        set({ refreshing: false });
+      }
+    },
+
+    pollJobs: async () => {
+      const s = get();
+      const id = s.activeId;
+      if (!id || !s.hydrated) return;
+      const active = s.projects.find((p) => p.id === id);
+      if (!active || !active.library.some((v) => v.status === "pending")) return;
+      try {
+        await fetchScope(id);
+      } catch { /* next tick retries */ }
+    },
+
+    activeProject: () => {
+      const { projects, activeId } = get();
+      return projects.find((x) => x.id === activeId) ?? projects[0];
+    },
+
+    updateActive: (fn) => {
+      const { activeId } = get();
+      if (!activeId) return { ok: false, error: "No active project." };
+      const current = get().projects.find((x) => x.id === activeId);
+      if (!current) return { ok: false, error: "Project not found." };
+      // Deep-copy the draft only — elements/youtube/library are server-backed
+      // and must go through addElement/deleteElement/setYoutube.
+      const draft: Project = {
+        ...current,
+        gen: { ...current.gen, refs: [...(current.gen.refs || [])] },
+      };
+      fn(draft);
+      const m = modelOf(draft.gen.model);
+      const resList = m.res;
+      const durList = m.dur;
+      if (!resList.includes(draft.gen.res)) draft.gen.res = (resList[0] ?? "720p") as GenDraft["res"];
+      if (!durList.includes(draft.gen.dur)) draft.gen.dur = durList[durList.length - 1] ?? 8;
+      if (draft.gen.mode === "r2v") draft.gen.dur = 8;
+      if (m.silent) draft.gen.audio = false;
+      local.drafts[activeId] = draft.gen;
+      persist();
+      rebuild({});
+      return { ok: true };
+    },
+
+    queueGeneration: async () => {
+      const p = get().activeProject();
+      if (!p) return { ok: false, error: "No active project." };
+      const g = { ...(local.drafts[p.id] ?? defaultGen()) };
       const m = modelOf(g.model);
-      if (!("ref" in m && m.ref)) g.model = "veo-3.1-fast-generate-001";
-      g.mode = "r2v";
-      const r = g.refs.filter(Boolean);
-      if (r.length < 3 && !r.includes(img)) r.push(img);
-      g.refs = r.slice(0, 3);
-      g.dur = 8;
-    });
-  },
-}));
+      const validation = validateGen(
+        { prompt: g.prompt, mode: g.mode, image: g.image, first: g.first, last: g.last, refs: g.refs, extendVideo: g.extendVideo },
+        m,
+        p.library,
+      );
+      if (validation) return { ok: false, error: validation };
+
+      const resolveAsset = async (img: string, category: string, label: string): Promise<string> => {
+        const hit = get().elements.find((e) => e.project_id === p.id && e.image_url === img);
+        if (hit) return hit.id;
+        const created = await api.createElement(p.id, {
+          category,
+          name: `${label} · ${new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+          imageUrl: img,
+          note: "Saved from generator",
+        });
+        set({ elements: [...get().elements, created] });
+        rebuild({});
+        return created.id;
+      };
+
+      try {
+        const dur = g.mode === "extend" ? 7 : g.dur;
+        const audio = m.silent ? false : g.audio;
+        const seed = g.seed === "" ? undefined : Number(g.seed);
+        const base: Record<string, unknown> = {
+          projectId: p.id,
+          mode: toServerMode(g.mode),
+          model: g.model,
+          prompt: g.prompt.trim(),
+          resolution: g.res,
+          aspect: g.aspect,
+          durationSeconds: dur,
+          audio,
+          sampleCount: 1,
+          ...(seed != null && !Number.isNaN(seed) ? { seed } : {}),
+        };
+        if (g.mode === "i2v") base.imageAssetId = await resolveAsset(g.image, "frames", "Source still");
+        if (g.mode === "frames") {
+          base.firstFrameAssetId = await resolveAsset(g.first, "frames", "First frame");
+          base.lastFrameAssetId = await resolveAsset(g.last, "frames", "Last frame");
+        }
+        if (g.mode === "r2v") {
+          base.refAssetIds = [];
+          for (const r of g.refs.filter(Boolean)) {
+            (base.refAssetIds as string[]).push(await resolveAsset(r, "assets", "Reference"));
+          }
+        }
+        if (g.mode === "extend") {
+          const s = p.library.find((x) => x.id === g.extendVideo);
+          base.sourceVideoId = g.extendVideo;
+          if (s) {
+            base.sourceResolution = s.res;
+            base.sourceAspect = s.aspect;
+            base.sourceDurationSeconds = s.dur;
+          }
+        }
+        let count = 0;
+        for (let i = 0; i < (g.batch || 1); i++) {
+          await api.createJob(base, crypto.randomUUID());
+          count++;
+        }
+        await get().refreshActive();
+        return { ok: true, count };
+      } catch (e) {
+        return { ok: false, error: errOf(e) };
+      }
+    },
+
+    importVideo: async (a) => {
+      const p = get().activeProject();
+      if (!p) return { ok: false, error: "No active project." };
+      try {
+        const { id } = await api.importVideo({
+          projectId: p.id,
+          prompt: a.prompt,
+          resolution: a.res,
+          aspect: a.aspect,
+          durationSeconds: a.dur,
+          audio: true,
+          thumbDataUrl: a.thumbDataUrl,
+        });
+        if (a.blobUrl) blobUrls[id] = a.blobUrl;
+        await get().refreshActive();
+        return { ok: true, id };
+      } catch (e) {
+        return { ok: false, error: errOf(e) };
+      }
+    },
+
+    deleteVideo: async (id: string) => {
+      const job = get().jobs.find((j) => j.id === id && (j.status === "queued" || j.status === "running"));
+      if (job) {
+        try {
+          await api.cancelJob(id);
+        } catch (e) {
+          set({ lastError: errOf(e) });
+        }
+      } else {
+        try {
+          await api.deleteVideo(id);
+        } catch {
+          // Already terminal/gone — refresh anyway.
+        }
+      }
+      delete blobUrls[id];
+      await get().refreshActive();
+    },
+
+    createProject: async (name: string) => {
+      const created = await api.createProject(name.trim() || "Project");
+      const one: SrvProject = { id: created.id, name: created.name, createdAt: Date.parse(created.created_at) || Date.now() };
+      local.drafts[one.id] = defaultGen();
+      local.settings[one.id] = defaultSettings();
+      local.activeId = one.id;
+      persist();
+      set({ srvProjects: [one, ...get().srvProjects], activeId: one.id });
+      rebuild({});
+      return one.id;
+    },
+
+    renameProject: async (id: string, name: string) => {
+      const updated = await api.renameProject(id, name);
+      set({ srvProjects: get().srvProjects.map((x) => (x.id === id ? { ...x, name: updated.name } : x)) });
+      rebuild({});
+    },
+
+    deleteProject: async (id: string) => {
+      await api.deleteProject(id);
+      delete local.drafts[id];
+      delete local.settings[id];
+      const srvProjects = get().srvProjects.filter((x) => x.id !== id);
+      const activeId = get().activeId === id ? (srvProjects[0]?.id ?? null) : get().activeId;
+      local.activeId = activeId;
+      persist();
+      set({
+        srvProjects,
+        activeId,
+        elements: get().elements.filter((e) => e.project_id !== id),
+        library: get().library.filter((v) => v.project_id !== id),
+        jobs: get().jobs.filter((j) => j.projectId !== id),
+      });
+      rebuild({});
+      if (activeId) await get().ensureLoaded(activeId);
+    },
+
+    setActiveId: (id: string | null) => {
+      local.activeId = id;
+      persist();
+      set({ activeId: id });
+      if (id) void get().ensureLoaded(id).catch(() => {});
+    },
+
+    attachElement: (cat, img) => {
+      get().updateActive((draft) => {
+        const g = draft.gen;
+        if (cat === "frames") {
+          if (!g.first) g.first = img;
+          else if (!g.last) g.last = img;
+          else { g.first = g.last; g.last = img; }
+          return;
+        }
+        const m = modelOf(g.model);
+        if (!m.ref) g.model = "veo-3.1-fast-generate-001";
+        g.mode = "r2v";
+        const r = g.refs.filter(Boolean);
+        if (r.length < 3 && !r.includes(img)) r.push(img);
+        g.refs = r.slice(0, 3);
+        g.dur = 8;
+      });
+    },
+
+    addElement: async (cat, data) => {
+      const p = get().activeProject();
+      if (!p) return { ok: false, error: "No active project." };
+      try {
+        const created = await api.createElement(p.id, {
+          category: cat,
+          name: data.name,
+          imageUrl: data.imageUrl,
+          note: data.note,
+        });
+        set({ elements: [created, ...get().elements] });
+        rebuild({});
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: errOf(e) };
+      }
+    },
+
+    deleteElement: async (id: string) => {
+      try {
+        await api.deleteElement(id);
+      } catch (e) {
+        set({ lastError: errOf(e) });
+      }
+      set({ elements: get().elements.filter((e) => e.id !== id) });
+      rebuild({});
+    },
+
+    setYoutube: (videoId, patch) => {
+      local.youtube[videoId] = { ...(local.youtube[videoId] ?? {}), ...patch };
+      persist();
+      rebuild({});
+    },
+
+    serverSettings: (projectId: string) => get().srvSettings[projectId],
+
+    saveSettings: async (patch) => {
+      const id = get().activeId;
+      if (!id) return;
+      // Server owns auth/bucket; the SA key itself is only ever sent up, never stored locally.
+      const { saJson, bucket, useBucket, authMode, ...ytPatch } = patch;
+      const serverPatch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" } = {};
+      if (typeof saJson === "string" && saJson.trim()) serverPatch.saJson = saJson;
+      if (bucket !== undefined) serverPatch.bucket = bucket;
+      if (useBucket !== undefined) serverPatch.useBucket = useBucket;
+      if (authMode !== undefined) serverPatch.authMode = authMode;
+      if (Object.keys(serverPatch).length > 0) {
+        const saved = await api.saveSettings(id, serverPatch);
+        set({ srvSettings: { ...get().srvSettings, [id]: saved } });
+      }
+      if (Object.keys(ytPatch).length > 0) {
+        local.settings[id] = { ...(local.settings[id] ?? defaultSettings()), ...ytPatch };
+        persist();
+      }
+      rebuild({});
+    },
+  };
+});

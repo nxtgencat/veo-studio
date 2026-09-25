@@ -6,8 +6,8 @@ import {
   Calendar, Check, MonitorPlay, RefreshCw, SkipBack, SkipForward, StretchHorizontal,
   Trash2,
 } from "lucide-react";
-import { EL_CATS, YT_PRIVS } from "@/mock/catalog.mock";
-import { ago, fullTs, money, pic, uid } from "@/lib/format";
+import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
+import { ago, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureAt, captureVideo, fileToImage } from "@/lib/media";
 import { ytConnect, ytUploadVideo, ytVideoState } from "@/lib/youtube";
@@ -60,6 +60,7 @@ export function StudioDialogs() {
 function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refIndex?: number; close: () => void }) {
   const project = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
   const updateActive = useStudio((s) => s.updateActive);
+  const addElement = useStudio((s) => s.addElement);
   const push = useToasts((s) => s.push);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
@@ -106,12 +107,14 @@ function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refI
         onFile={(f) => {
           setBusy(true);
           fileToImage(f)
-            .then((url) => {
-              const el = { id: uid("el"), name: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "Upload", img: url, note: "Uploaded in picker" };
-              updateActive((d) => {
-                d.elements[slotKey === "ref" ? "assets" : "frames"].unshift(el);
+            .then(async (url) => {
+              const r = await addElement(slotKey === "ref" ? "assets" : "frames", {
+                name: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "Upload",
+                imageUrl: url,
+                note: "Uploaded in picker",
               });
-              pick(url);
+              if (!r.ok) push(r.error ?? "Could not save image", { icon: "!", tone: "danger" });
+              else pick(url);
             })
             .catch(() => push("Could not read that image", { icon: "!", tone: "danger" }))
             .finally(() => setBusy(false));
@@ -182,19 +185,24 @@ function VideoPickerDialog({ close }: { close: () => void }) {
         onFile={(f) => {
           setBusy(true);
           captureVideo(f)
-            .then(({ url, thumb, meta }) => {
-              const v = {
-                id: uid("vid"), mode: "t2v" as const, prompt: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
-                model: "import", res: meta.res, aspect: meta.aspect, dur: meta.dur, audio: true,
-                seed: "" as string | number, person: "allow_adult", enhance: false, batch: 1,
-                status: "success" as const, progress: 100, cost: 0, createdAt: Date.now(),
-                thumb, url, imported: true, error: "", inputs: {},
-              };
-              importVideo(v);
-              updateActive((d) => { d.gen.extendVideo = v.id; });
+            .then(async ({ url, thumb, meta }) => {
+              const r = await importVideo({
+                prompt: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
+                res: meta.res,
+                aspect: meta.aspect,
+                dur: meta.dur,
+                thumbDataUrl: thumb,
+                blobUrl: url,
+              });
+              if (!r.ok || !r.id) {
+                push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
+                return;
+              }
+              updateActive((d) => { d.gen.extendVideo = r.id as string; });
               close();
               push(meta.dur > 30 ? `Imported — but ${meta.dur}s is too long to extend (≤30s)` : "Imported and selected as extend source", { icon: "✓" });
             })
+            .catch(() => push("Could not read that video", { icon: "!", tone: "danger" }))
             .finally(() => setBusy(false));
         }}
       />
@@ -300,6 +308,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
+  const addElement = useStudio((s) => s.addElement);
   const updateActive = useStudio((s) => s.updateActive);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", youtube: "", confirmDel: "" });
@@ -322,17 +331,16 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     }
     push(`Grabbing ${which.toLowerCase()}…`, { icon: "…" });
     captureAt(v.url, t)
-      .then((img) => {
-        updateActive((d) => {
-          d.elements.frames.unshift({ id: uid("el"), name: `${which} · ${(v.prompt || "video").slice(0, 28)}`, img, note: "Grabbed from library video" });
+      .then(async (img) => {
+        const r = await addElement("frames", {
+          name: `${which} · ${(v.prompt || "video").slice(0, 28)}`,
+          imageUrl: img,
+          note: "Grabbed from library video",
         });
-        push(`${which} saved to Elements`, { icon: "✓" });
+        push(r.ok ? `${which} saved to Elements` : (r.error ?? "Could not save frame"), { icon: r.ok ? "✓" : "!", tone: r.ok ? "ok" : "danger" });
       })
       .catch(() => {
-        updateActive((d) => {
-          d.elements.frames.unshift({ id: uid("el"), name: `${which} · ${(v.prompt || "video").slice(0, 28)}`, img: v.thumb || pic(v.id, 400, 225), note: "Cover fallback" });
-        });
-        push("Live grab blocked — saved cover instead", { icon: "!", tone: "danger" });
+        push("Live grab blocked by the browser — try playing the video first", { icon: "!", tone: "danger" });
       });
   };
 
@@ -495,17 +503,18 @@ function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => 
     <SlateModal onClose={close}>
       <h3 className="font-display font-bold text-[16px]">Delete this video?</h3>
       <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">
-        Removes it from the library and its cost from the project total. This cannot be undone.
+        Removes it from the library and its cost from the project total. Pending renders are cancelled first (no charge). This cannot be undone.
       </p>
       <div className="mt-5 flex gap-2 justify-end">
         <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
         <SlateButton
           variant="danger"
           onClick={() => {
-            deleteVideo(videoId);
-            push("Video deleted", { icon: "🗑", tone: "info" });
-            set({ video: "", confirmDel: "" });
-            close();
+            void deleteVideo(videoId).then(() => {
+              push("Video deleted", { icon: "🗑", tone: "info" });
+              set({ video: "", confirmDel: "" });
+              close();
+            });
           }}
         >
           Delete
@@ -519,7 +528,7 @@ function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => 
 function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void }) {
   const params = useParams<{ projectId: string }>();
   const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
-  const updateActive = useStudio((s) => s.updateActive);
+  const setYoutube = useStudio((s) => s.setYoutube);
   const push = useToasts((s) => s.push);
   const yt = useYtAuth();
   const v = project?.library.find((x) => x.id === videoId);
@@ -539,11 +548,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
 
   if (!project || !v) return null;
   const connected = !!yt.token && yt.exp > Date.now();
-  const saveYt = (patch: Record<string, unknown>) =>
-    updateActive((d) => {
-      const x = d.library.find((y) => y.id === v.id);
-      if (x) x.youtube = { ...(x.youtube ?? {}), ...patch } as typeof x.youtube;
-    });
+  const saveYt = (patch: Record<string, unknown>) => setYoutube(v.id, patch);
 
   const poll = (id: string) => {
     if (pollRef.current) clearInterval(pollRef.current);

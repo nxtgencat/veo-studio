@@ -7,9 +7,9 @@ import {
   ArrowRight, Check, ChevronDown, CircleX, ImagePlus, Play, SlidersHorizontal, Sparkles, TriangleAlert,
   Volume2, VolumeX, WandSparkles, X,
 } from "lucide-react";
-import { EL_CATS, MODELS, MODES } from "@/mock/catalog.mock";
-import { money, pic } from "@/lib/format";
-import { modelOf, priceFor } from "@/lib/pricing";
+import { EL_CATS, MODES } from "@/lib/catalog";
+import { money } from "@/lib/format";
+import { allModels, modelOf, priceFor } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
@@ -81,6 +81,8 @@ export function GenerateView() {
 
   const g = project?.gen;
   const m = useMemo(() => modelOf(g?.model ?? ""), [g?.model]);
+  const capsReady = useStudio((s) => s.capsReady);
+  const MODELS = useMemo(() => (capsReady ? allModels() : []), [capsReady]);
   const price = useMemo(
     () => (g ? priceFor(g.model, g.res, g.dur, g.audio, g.batch) : null),
     [g?.model, g?.res, g?.dur, g?.audio, g?.batch],
@@ -88,6 +90,13 @@ export function GenerateView() {
   const cur = MODES.find((x) => x.id === g?.mode) ?? MODES[0];
 
   if (!project || !g) return null;
+  if (!capsReady) {
+    return (
+      <div className="min-h-full grid place-items-center">
+        <p className="text-[13px] text-muted">Loading models from server…</p>
+      </div>
+    );
+  }
   const bad =
     (g.mode === "r2v" && !("ref" in m && m.ref)) ||
     (g.mode === "extend" && !("ext" in m && m.ext)) ||
@@ -139,9 +148,10 @@ export function GenerateView() {
 
   const submit = () => {
     setMention(null);
-    const r = queueGeneration();
-    if (!r.ok) push(r.error ?? "Cannot generate", { icon: "!", tone: "danger" });
-    else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "✦", detail: `${m.label} · ${g.res} · ${g.dur}s` });
+    void queueGeneration().then((r) => {
+      if (!r.ok) push(r.error ?? "Cannot generate", { icon: "!", tone: "danger" });
+      else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "✦", detail: `${m.label} · ${g.res} · ${g.dur}s` });
+    });
   };
 
   const openPicker = (patch: Record<string, string>) => set(patch);
@@ -196,7 +206,13 @@ export function GenerateView() {
                 <div className="flex gap-3 p-3 min-w-0">
                   <span className="w-[96px] min-[420px]:w-[120px] sm:w-[168px] aspect-video rounded-[8px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={v.thumb || pic(v.id, 320, 180)} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+                    {v.thumb ? (
+                      <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+                    ) : (
+                      <span className="absolute inset-0 grid place-items-center text-muted">
+                        <Play className="size-5 opacity-40" />
+                      </span>
+                    )}
                     {v.status === "success" && (
                       <span className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-black/55 grid place-items-center">
                         <Play className="size-4 text-white ml-0.5" />

@@ -24,6 +24,7 @@ export const jobInputSchema = z.object({
   lastFrameAssetId: z.string().optional(),
   refAssetIds: z.array(z.string()).max(3).default([]),
   sourceVideoId: z.string().optional(),
+  sourceVideoGcsUri: z.string().regex(/^gs:\/\/[^/]+\/.+/, "must be a gs://bucket/object URI").optional(),
   sourceDurationSeconds: z.number().optional(),
   sourceResolution: z.string().optional(),
   sourceAspect: z.string().optional(),

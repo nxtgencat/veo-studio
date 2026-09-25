@@ -36,6 +36,9 @@ GOOGLE_CLOUD_PROJECT=… VERTEX_ACCESS_TOKEN=… VERTEXAI_LOCATION=us-central1
   carry `thumbnailStatus: "decoder-unavailable-in-this-runtime"` with
   `thumbnails: []`; the same code returns base64 PNGs where a decoder exists.
 - CRUD: `/projects`, `/projects/:id/elements` (`characters|locations|assets|frames`).
+- `GET/PATCH /projects/:id/settings` — service-account JSON (write-only),
+  bucket, `useBucket` toggle, `authMode` (`service_account` default | `env`).
+  Reads never include the key.
 
 ## Rules enforced (see `src/validation.ts`)
 
@@ -67,3 +70,15 @@ server/
 ```sh
 bun --filter server test && bun --filter server typecheck
 ```
+
+## Web integration
+
+The Next app talks to this API exclusively through `lib/api.ts` — no mocks.
+Base URL defaults to `http://localhost:8787`; override with
+`NEXT_PUBLIC_API_URL`. Browser calls need CORS: allowed origins come from
+`ALLOWED_ORIGINS` (default `http://localhost:3000`).
+
+Server-owned: projects, elements, jobs, library, capabilities.
+Web-local (localStorage `veo-web-v1`): gen drafts, project settings,
+YouTube publish state. Uploaded-video playback URLs are session-only
+blobs; the server keeps provenance + thumbnails.

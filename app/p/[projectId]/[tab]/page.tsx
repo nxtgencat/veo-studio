@@ -24,6 +24,7 @@ export default function ProjectTabPage() {
   const hydrated = useStudio((s) => s.hydrated);
   const projects = useStudio((s) => s.projects);
   const setActiveId = useStudio((s) => s.setActiveId);
+  const ensureLoaded = useStudio((s) => s.ensureLoaded);
 
   const tabParsed = studioTabSchema.safeParse(params.tab);
   const project = projects.find((p) => p.id === params.projectId);
@@ -31,19 +32,21 @@ export default function ProjectTabPage() {
   useEffect(() => {
     if (!hydrated) return;
     if (project && useStudio.getState().activeId !== project.id) setActiveId(project.id);
-  }, [hydrated, project, setActiveId]);
+    if (params.projectId) void ensureLoaded(params.projectId);
+  }, [hydrated, project, setActiveId, ensureLoaded, params.projectId]);
+
+  // Navigation must happen in an effect — never during render.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (project) return;
+    const fallback = useStudio.getState().projects[0];
+    if (!fallback) router.replace("/");
+    else router.replace(`/p/${fallback.id}/${params.tab}`);
+  }, [hydrated, project, router, params.tab]);
 
   if (tabParsed.success === false) notFound();
   if (!hydrated) return null;
-  if (!project) {
-    const fallback = projects[0];
-    if (!fallback) {
-      router.replace("/");
-      return null;
-    }
-    router.replace(`/p/${fallback.id}/${params.tab}`);
-    return null;
-  }
+  if (!project) return null;
 
   return (
     <StudioShell>

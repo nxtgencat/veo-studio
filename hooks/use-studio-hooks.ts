@@ -4,15 +4,15 @@ import { useCallback, useEffect, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useStudio } from "@/stores/use-studio";
 
-/** Tick pending renders forward (mock renderer). Single interval, no prop drilling. */
+/** Poll in-flight server jobs while any render is pending. Replaces the old mock renderer. */
 export function useRenderTick() {
-  const tickRenders = useStudio((s) => s.tickRenders);
+  const pollJobs = useStudio((s) => s.pollJobs);
   const hasPending = useStudio((s) => s.projects.some((q) => q.library.some((v) => v.status === "pending")));
   useEffect(() => {
     if (!hasPending) return;
-    const t = setInterval(tickRenders, 900);
+    const t = setInterval(() => void pollJobs(), 3000);
     return () => clearInterval(t);
-  }, [hasPending, tickRenders]);
+  }, [hasPending, pollJobs]);
 }
 
 /** Hydrate zustand from localStorage once (client-only, avoids SSR mismatch). */

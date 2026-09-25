@@ -78,6 +78,14 @@ export function migrate(d: Database) {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_library_project ON library(project_id, created_at);
+    CREATE TABLE IF NOT EXISTS project_settings (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      sa_json TEXT NOT NULL DEFAULT '',
+      bucket TEXT NOT NULL DEFAULT '',
+      use_bucket INTEGER NOT NULL DEFAULT 1,
+      auth_mode TEXT NOT NULL DEFAULT 'service_account',
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 

@@ -1,7 +1,6 @@
-// Client-side media helpers (canvas thumbnails). No store imports — pure functions.
+// Client-side media helpers (canvas capture). No store imports — pure functions.
+// Thumbnails fall back to "" (no fake artwork) when capture fails.
 "use client";
-
-import { pic } from "@/lib/format";
 
 export function fileToImage(file: File, maxDim = 768): Promise<string> {
   return new Promise((res, rej) => {
@@ -105,10 +104,10 @@ export function captureVideo(file: File): Promise<CapturedVideo> {
         c.getContext("2d")?.drawImage(v, 0, 0, c.width, c.height);
         fin(c.toDataURL("image/jpeg", 0.75), meta);
       } catch {
-        fin(pic(file.name + Date.now(), 640, 360), meta);
+        fin("", meta);
       }
     };
-    v.onerror = () => fin(pic(file.name + Date.now(), 640, 360), { dur: 8, res: "720p", aspect: "16:9" });
-    setTimeout(() => fin(pic(file.name + Date.now(), 640, 360), { dur: 8, res: "720p", aspect: "16:9" }), 8000);
+    v.onerror = () => fin("", { dur: 8, res: "720p", aspect: "16:9" });
+    setTimeout(() => fin("", { dur: 8, res: "720p", aspect: "16:9" }), 8000);
   });
 }

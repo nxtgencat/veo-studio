@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Check, LogOut, Moon, ShieldCheck, Sun, MonitorPlay } from "lucide-react";
-import { RATES } from "@/mock/catalog.mock";
-import { YT_CATS, YT_PRIVS } from "@/mock/catalog.mock";
+import { Check, KeyRound, LogOut, Moon, ShieldCheck, Sun, MonitorPlay } from "lucide-react";
+import { YT_CATS, YT_PRIVS } from "@/lib/catalog";
+import { rateFor } from "@/lib/pricing";
 import { ytCatLabel, ytConnect } from "@/lib/youtube";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts, useYtAuth } from "@/stores/use-ui";
@@ -16,38 +16,65 @@ import { SlateCard } from "@/components/slate/core";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 
 function RateCell({ tier, res, audio }: { tier: string; res: string; audio: boolean }) {
-  const r = RATES[tier]?.[res];
-  if (!r) return <span className="text-muted">—</span>;
-  const v = audio ? r.a : r.s;
-  return v == null ? <span className="text-muted">—</span> : <span className="font-mono">${v.toFixed(2)}</span>;
+  // Representative model per tier for the rate lookup (rates are tier+res based).
+  const rep = tier === "Lite" ? "veo-3.1-lite-generate-001" : tier === "Fast" ? "veo-3.1-fast-generate-001" : tier === "Legacy" ? "veo-2.0-generate-001" : "veo-3.1-generate-001";
+  const v = rateFor(rep, res, audio);
+  if (v == null) return <span className="text-muted">—</span>;
+  return <span className="font-mono">${v.toFixed(2)}</span>;
 }
 
 export function SettingsView() {
   const params = useParams<{ projectId: string }>();
   const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
-  const updateActive = useStudio((s) => s.updateActive);
+  const saveSettings = useStudio((s) => s.saveSettings);
+  const serverSettings = useStudio((s) => s.serverSettings(params.projectId));
   const push = useToasts((s) => s.push);
   const { resolvedTheme, setTheme } = useTheme();
   const dark = resolvedTheme === "dark";
   const yt = useYtAuth();
-  const [sa, setSa] = useState(project?.settings.saJson ?? "");
+  const [sa, setSa] = useState("");
   const [bucket, setBucket] = useState(project?.settings.bucket ?? "");
+  const [useBucket, setUseBucket] = useState(project?.settings.useBucket ?? true);
+  const [authMode, setAuthMode] = useState<"service_account" | "env">(project?.settings.authMode ?? "service_account");
   const [ytId, setYtId] = useState(project?.settings.ytClientId ?? "");
   const [ytPriv, setYtPriv] = useState(project?.settings.ytPrivacy ?? "unlisted");
   const [ytCat, setYtCat] = useState(project?.settings.ytCategory ?? "22");
   const [ytBusy, setYtBusy] = useState(false);
+  const [connBusy, setConnBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // Resync local editors when the server state arrives/changes.
+  useEffect(() => {
+    if (!project) return;
+    setBucket(project.settings.bucket ?? "");
+    setUseBucket(project.settings.useBucket ?? true);
+    setAuthMode(project.settings.authMode ?? "service_account");
+  }, [project?.settings.bucket, project?.settings.useBucket, project?.settings.authMode]);
 
   if (!project) return null;
   const connected = !!yt.token && yt.exp > Date.now();
 
   const saveConn = () => {
-    updateActive((d) => { d.settings.saJson = sa; d.settings.bucket = bucket.trim(); });
-    push("Settings saved", { icon: "✓" });
+    if (connBusy) return;
+    setConnBusy(true);
+    setErr("");
+    void saveSettings({ saJson: sa, bucket: bucket.trim(), useBucket, authMode }).then(
+      () => {
+        push("Connection saved on server", { icon: "✓", detail: sa.trim() ? "Service account updated" : "Settings updated" });
+        setSa("");
+      },
+      (e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setErr(msg);
+        push("Save failed", { icon: "!", tone: "danger", detail: msg.slice(0, 140) });
+      },
+    ).finally(() => setConnBusy(false));
   };
   const saveYt = () => {
-    updateActive((d) => { d.settings.ytClientId = ytId.trim(); d.settings.ytPrivacy = ytPriv as "private" | "unlisted" | "public"; d.settings.ytCategory = ytCat; });
-    push("YouTube settings saved", { icon: "✓" });
+    void saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
+      () => push("YouTube settings saved", { icon: "✓" }),
+      (e) => push("Save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+    );
   };
   const validate = () => {
     const msgs: string[] = [];
@@ -75,7 +102,13 @@ export function SettingsView() {
   const ytGo = async () => {
     if (ytBusy) return;
     setYtBusy(true);
-    updateActive((d) => { d.settings.ytClientId = ytId.trim(); d.settings.ytPrivacy = ytPriv as "private" | "unlisted" | "public"; d.settings.ytCategory = ytCat; });
+    try {
+      await saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat });
+    } catch (e) {
+      push("Save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) });
+      setYtBusy(false);
+      return;
+    }
     try {
       const { token, exp } = await ytConnect(ytId);
       const { ytFetchChannel } = await import("@/lib/youtube");
@@ -91,7 +124,7 @@ export function SettingsView() {
 
   return (
     <>
-      <PageHead title="Settings" sub={`Credentials and pricing for ${project.name}. Credentials stay in this browser.`} />
+      <PageHead title="Settings" sub={`Credentials and pricing for ${project.name}. The service-account key lives on the server and is never sent back.`} />
       <div className="grid xl:grid-cols-2 gap-4 items-start">
         {/* Two explicit stacks (not row-aligned cards) so short + tall cards
             never leave dead gaps — left: Appearance + YouTube, right: Cloud. */}
@@ -168,22 +201,59 @@ export function SettingsView() {
         <SlateCard>
           <SlateCardHeader>
             <h3 className="font-display font-bold text-[13.5px]">Google Cloud connection</h3>
-            <SlateBadge tone="draft">Local only</SlateBadge>
+            {authMode === "env" ? (
+              <SlateBadge tone="info">Environment</SlateBadge>
+            ) : serverSettings?.hasSaJson ? (
+              <SlateBadge tone="ok"><KeyRound className="size-3" /> SA connected</SlateBadge>
+            ) : (
+              <SlateBadge tone="danger">No service account</SlateBadge>
+            )}
           </SlateCardHeader>
           <div className="p-4 space-y-4">
+            {serverSettings?.hasSaJson && (
+              <p className="text-[11.5px] font-mono break-words rounded-[8px] border slate-hair p-2" style={{ background: "var(--surface-2)" }}>
+                {serverSettings.saEmail ?? "service account"} · {serverSettings.saProjectId ?? ""}
+              </p>
+            )}
             <div>
-              <SlateLabel>Service account JSON</SlateLabel>
-              <SlateTextarea className="font-mono !text-[11.5px]" rows={7} value={sa} onChange={(e) => setSa(e.target.value)} placeholder='{"type":"service_account","project_id":"…"}' />
-              <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span> + object access on your bucket.</p>
+              <SlateLabel>Auth method</SlateLabel>
+              <SlateDropdown
+                label={authMode === "env" ? "Environment variables" : "Service account JSON (default)"}
+                btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
+                menu={(close) => (
+                  <>
+                    <SlateOption active={authMode === "service_account"} sub="Paste a key below" onPick={() => setAuthMode("service_account")} onClose={close}>
+                      Service account JSON (default)
+                    </SlateOption>
+                    <SlateOption active={authMode === "env"} sub="GOOGLE_CLOUD_PROJECT + VERTEX_ACCESS_TOKEN" onPick={() => setAuthMode("env")} onClose={close}>
+                      Environment variables
+                    </SlateOption>
+                  </>
+                )}
+              />
             </div>
+            {authMode === "service_account" && (
+              <div>
+                <SlateLabel>Service account JSON {serverSettings?.hasSaJson ? <span className="text-muted font-normal">(blank = keep current)</span> : null}</SlateLabel>
+                <SlateTextarea className="font-mono !text-[11.5px]" rows={5} value={sa} onChange={(e) => setSa(e.target.value)} placeholder='{"type":"service_account","project_id":"…"}' />
+                <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span> + object access on your bucket. Stored server-side, never sent back.</p>
+              </div>
+            )}
             <div>
               <SlateLabel>Storage bucket ID</SlateLabel>
               <SlateField className="font-mono !text-[12.5px]" value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="my-veo-output-12345" />
-              <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Used for outputs and Extend inputs.</p>
+              <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Vertex writes outputs here; Extend chains from bucket videos.</p>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-bold">Use bucket</p>
+                <p className="text-[11.5px] text-muted mt-0.5">Off = outputs return inline (not persisted), Extend unavailable.</p>
+              </div>
+              <SlateToggle on={useBucket} label="Toggle bucket use" onFlip={() => setUseBucket((v) => !v)} />
             </div>
             {err && <p className="text-[11.5px] text-[#C9432E]">{err}</p>}
             <div className="flex gap-2 flex-wrap">
-              <SlateButton variant="primary" size="sm" onClick={saveConn}><Check className="size-3.5" /> Save</SlateButton>
+              <SlateButton variant="primary" size="sm" disabled={connBusy} onClick={saveConn}><Check className="size-3.5" /> {connBusy ? "Saving…" : "Save"}</SlateButton>
               <SlateButton variant="ghost" size="sm" onClick={validate}><ShieldCheck className="size-3.5" /> Validate</SlateButton>
             </div>
           </div>

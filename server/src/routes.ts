@@ -1,6 +1,8 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { z } from "zod";
 import { getDb, nowIso } from "./db.ts";
+import { getSettings, parseSaJson, saveSettings } from "./auth.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -21,6 +23,18 @@ app.use("*", async (c, next) => {
     "request",
   );
 });
+
+// Browser web app (Next on :3000 by default) calls this API cross-origin.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000").split(",");
+app.use(
+  "*",
+  cors({
+    origin: (origin) => (allowedOrigins.includes(origin) ? origin : allowedOrigins[0] ?? origin),
+    allowHeaders: ["Content-Type", "Idempotency-Key"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    maxAge: 86400,
+  }),
+);
 
 // ---------- projects ----------
 app.post("/projects", async (c) => {
@@ -111,6 +125,57 @@ app.delete("/elements/:id", (c) => {
   return c.json({ deleted: true });
 });
 
+// ---------- project settings (auth + bucket; SA key never leaves the server) ----------
+app.get("/projects/:id/settings", (c) => {
+  const pid = c.req.param("id");
+  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
+    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  }
+  const s = getSettings(pid);
+  let saEmail: string | null = null;
+  let saProjectId: string | null = null;
+  if (s.saJson.trim()) {
+    try {
+      const sa = parseSaJson(s.saJson);
+      saEmail = sa.client_email;
+      saProjectId = sa.project_id;
+    } catch { /* stored key invalid — surface via hasSaJson only */ }
+  }
+  return c.json({
+    projectId: pid,
+    bucket: s.bucket,
+    useBucket: s.useBucket,
+    authMode: s.authMode,
+    hasSaJson: !!s.saJson.trim(),
+    saEmail,
+    saProjectId,
+  });
+});
+
+const settingsSchema = z.object({
+  saJson: z.string().max(20000).optional(),
+  bucket: z.string().max(63).optional(),
+  useBucket: z.boolean().optional(),
+  authMode: z.enum(["service_account", "env"]).optional(),
+});
+
+app.patch("/projects/:id/settings", async (c) => {
+  const pid = c.req.param("id");
+  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
+    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  }
+  const parsed = settingsSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid settings", zodDetails(parsed.error));
+  try {
+    saveSettings(pid, parsed.data);
+  } catch (e: any) {
+    return err(c, 422, e?.code ?? "SETTINGS_INVALID", e?.message ?? "Invalid settings");
+  }
+  logger.info({ projectId: pid, authMode: parsed.data.authMode, useBucket: parsed.data.useBucket }, "project settings saved");
+  const res = await app.request(`/projects/${pid}/settings`);
+  return c.json(await res.json());
+});
+
 // ---------- composer / jobs ----------
 app.post("/composer/jobs", async (c) => {
   const key = c.req.header("idempotency-key") ?? c.req.header("Idempotency-Key");
@@ -130,6 +195,15 @@ app.get("/jobs/:id", (c) => {
   const row = getJob(c.req.param("id"));
   if (!row) return err(c, 404, "JOB_NOT_FOUND", "No such job");
   return c.json(formatJob(row));
+});
+
+app.get("/jobs", (c) => {
+  const projectId = c.req.query("projectId");
+  const db = getDb();
+  const rows = projectId
+    ? (db.query("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 200").all(projectId) as any[])
+    : (db.query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200").all() as any[]);
+  return c.json({ jobs: rows.map(formatJob) });
 });
 
 app.post("/jobs/:id/cancel", async (c) => {
@@ -181,6 +255,44 @@ app.get("/library/:id", (c) => {
   const row = getDb().query("SELECT * FROM library WHERE id=?").get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
   return c.json(row);
+});
+
+app.delete("/library/:id", (c) => {
+  const r = getDb().query("DELETE FROM library WHERE id=?").run(c.req.param("id"));
+  if (!r.changes) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
+  return c.json({ deleted: true });
+});
+
+const importSchema = z.object({
+  projectId: z.string().min(1),
+  prompt: z.string().max(500).default("Uploaded video"),
+  resolution: z.enum(["720p", "1080p", "4K"]).default("720p"),
+  aspect: z.enum(["16:9", "9:16"]).default("16:9"),
+  durationSeconds: z.number().int().min(1).max(3600).default(8),
+  audio: z.boolean().default(true),
+  thumbDataUrl: z.string().max(2000000).default(""),
+});
+
+app.post("/library/import", async (c) => {
+  const parsed = importSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid import", zodDetails(parsed.error));
+  const db = getDb();
+  if (!db.query("SELECT id FROM projects WHERE id=?").get(parsed.data.projectId)) {
+    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  }
+  const id = Bun.randomUUIDv7();
+  const now = nowIso();
+  db.query(
+    `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
+      duration_seconds, audio, status, cost_estimate, thumb_url, inputs_json, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    id, parsed.data.projectId, `import-${id}`, "t2v", "import", parsed.data.prompt,
+    parsed.data.resolution, parsed.data.aspect, parsed.data.durationSeconds,
+    parsed.data.audio ? 1 : 0, "succeeded", 0, parsed.data.thumbDataUrl, "{}", now, now,
+  );
+  logger.info({ id, projectId: parsed.data.projectId }, "video imported");
+  return c.json({ id }, 201);
 });
 
 // ---------- capabilities ----------

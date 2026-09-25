@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clapperboard, Database, Film, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
-import { TABS } from "@/mock/catalog.mock";
+import { TABS } from "@/lib/catalog";
 import { money } from "@/lib/format";
 import { pendingOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";

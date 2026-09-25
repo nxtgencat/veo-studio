@@ -42,9 +42,13 @@ export default function VideoDeepLinkPage() {
         {v.url ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption
           <video className="w-full rounded-[10px] bg-black" controls playsInline poster={v.thumb || ""} src={v.url} />
-        ) : (
+        ) : v.thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={v.thumb} className="w-full rounded-[10px] object-cover" alt="" />
+        ) : (
+          <div className="w-full rounded-[10px] bg-surface2 aspect-video grid place-items-center text-muted text-[12px]">
+            No preview yet
+          </div>
         )}
         <p className="mt-3 text-[13.5px] font-semibold leading-relaxed">{v.prompt || "Untitled"}</p>
         <p className="mt-1 text-[11.5px] font-mono text-muted" title={fullTs(v.createdAt)}>

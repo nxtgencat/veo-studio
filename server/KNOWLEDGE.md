@@ -104,13 +104,26 @@ Official extend-video docs (Agent Platform):
      `sourceVideoId` + stored provenance), plus a prompt describing the
      continuation. Audio flag may be toggled only if the model supports it.
 
-## 5. Auth, regions, quotas
+## 5. Auth, regions, quotas, buckets
 
-- Vertex auth: **Application Default Credentials / service account** with
-  `Vertex AI User` role (`GOOGLE_APPLICATION_CREDENTIALS` or
-  `VERTEXAI_CREDENTIALS` JSON). Gemini API (AI Studio) uses API key +
-  `predictLongRunning` — different endpoint, same LRO shape.
-- Regions: Veo serves from **`us-central1`** (US). Other regions 429/404.
+- **Default auth: service-account JSON, pasted in Settings.**
+  The key carries `project_id`, `client_email`, `private_key` — nothing else
+  is needed. Server signs an RS256 JWT assertion (Bun WebCrypto, zero deps)
+  and exchanges it at `https://oauth2.googleapis.com/token` for a cached
+  Bearer access token (`cloud-platform` scope), used for Vertex calls.
+  Keys live in the server DB (`project_settings.sa_json`) and are never
+  returned by the API (`GET settings` exposes only `hasSaJson/saEmail`).
+- **Environment auth is opt-in per project** (`authMode: env`), using
+  `GOOGLE_CLOUD_PROJECT`/`VERTEX_ACCESS_TOKEN`. Without a key or env creds,
+  jobs fail with an actionable `E_SA_MISSING` / `E_VERTEX_NOT_CONFIGURED`.
+- **Bucket (`use_bucket`, default on):** when a bucket is set, submits carry
+  `storageUri: gs://{bucket}/veo/` so Vertex writes outputs to Cloud Storage,
+  and the output URI is stored as the library `video_url` — which is what
+  makes **Extend chaining work headless** (extend sources must be `gs://`
+  URIs: an explicit `sourceVideoGcsUri` or a previous bucket output).
+  With the bucket off, outputs return inline and Extend is unavailable
+  (`EXTEND_NEEDS_GCS`).
+- Regions: Veo serves from **`us-central1`** (set `VERTEXAI_LOCATION` to change).
   Server stores `region` per job, defaults `us-central1`.
 - Quotas (per project, per base model, per minute, per region):
   Veo 3.x **10 online prediction requests/min**; Veo 3.1 **50/min**

@@ -54,6 +54,7 @@ export const youtubeStateSchema = z.object({
 
 export const videoItemSchema = z.object({
   id: z.string().min(1),
+  jobId: z.string().optional(),
   mode: generationModeSchema,
   prompt: z.string(),
   model: z.string(),
@@ -87,6 +88,8 @@ export const elementItemSchema = z.object({
 export const projectSettingsSchema = z.object({
   saJson: z.string(),
   bucket: z.string(),
+  useBucket: z.boolean().default(true),
+  authMode: z.enum(["service_account", "env"]).default("service_account"),
   ytClientId: z.string(),
   ytPrivacy: z.enum(["private", "unlisted", "public"]),
   ytCategory: z.string(),

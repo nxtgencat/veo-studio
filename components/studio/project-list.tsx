@@ -119,12 +119,18 @@ function ProjectModal({ initial, done }: { initial?: { id: string; name: string 
             return;
           }
           if (initial) {
-            renameProject(initial.id, parsed.data);
-            push("Project renamed", { icon: "check" });
+            void renameProject(initial.id, parsed.data).then(
+              () => push("Project renamed", { icon: "check" }),
+              () => push("Rename failed — is the server running?", { icon: "!", tone: "danger" }),
+            );
           } else {
-            const id = createProject(parsed.data);
-            push("Project created", { icon: "plus" });
-            router.push(`/p/${id}/generate`);
+            void createProject(parsed.data).then(
+              (id) => {
+                push("Project created", { icon: "plus" });
+                router.push(`/p/${id}/generate`);
+              },
+              () => push("Create failed — is the server running?", { icon: "!", tone: "danger" }),
+            );
           }
           done();
         }}
@@ -173,9 +179,13 @@ function DeleteProjectConfirm({ id, name, done }: { id: string; name: string; do
         <SlateButton
           variant="danger"
           onClick={() => {
-            deleteProject(id);
-            push("Project deleted", { icon: "trash", tone: "info" });
-            done();
+            void deleteProject(id).then(
+              () => {
+                push("Project deleted", { icon: "trash", tone: "info" });
+                done();
+              },
+              () => push("Delete failed — is the server running?", { icon: "!", tone: "danger" }),
+            );
           }}
         >
           Delete project

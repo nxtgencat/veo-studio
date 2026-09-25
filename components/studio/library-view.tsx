@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "lucide-react";
-import { money, pic, uid } from "@/lib/format";
+import { money } from "@/lib/format";
 import { ago, fullTs } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureVideo } from "@/lib/media";
@@ -50,16 +50,16 @@ export function LibraryView() {
     push("Importing video…", { icon: "↑" });
     try {
       const { url, thumb, meta } = await captureVideo(file);
-      const v: VideoItem = {
-        id: uid("vid"), mode: "t2v",
+      const r = await importVideo({
         prompt: (file.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
-        model: "import", res: meta.res, aspect: meta.aspect, dur: meta.dur, audio: true,
-        seed: "", person: "allow_adult", enhance: false, batch: 1,
-        status: "success", progress: 100, cost: 0, createdAt: Date.now(),
-        thumb, url, imported: true, error: "", inputs: {},
-      };
-      importVideo(v);
-      push("Video imported to Library", { icon: "✓" });
+        res: meta.res,
+        aspect: meta.aspect,
+        dur: meta.dur,
+        thumbDataUrl: thumb,
+        blobUrl: url,
+      });
+      if (!r.ok) push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
+      else push("Video imported to Library", { icon: "✓" });
     } catch {
       push("Could not read that video", { icon: "!", tone: "danger" });
     } finally {
@@ -171,8 +171,10 @@ export function LibraryView() {
               className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
             >
               <div className="relative aspect-video bg-surface2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={v.thumb || pic(v.id)} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+                {v.thumb ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+                ) : null}
                 {v.status === "success" && (
                   <span className="absolute inset-0 m-auto w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/55 grid place-items-center">
                     <Play className="size-4 sm:size-5 text-white ml-0.5" />

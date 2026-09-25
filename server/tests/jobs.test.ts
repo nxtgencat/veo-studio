@@ -37,7 +37,7 @@ describe("async job flow", () => {
     let polls = 0;
     setDriverForTests({
       submit: async () => "operations/test-1",
-      get: async () => (++polls >= 2 ? { name: "operations/test-1", done: true } : { name: "operations/test-1", done: false }),
+      get: async () => (++polls >= 2 ? { name: "operations/test-1", done: true, videoUris: ["gs://b/veo/out.mp4"] } : { name: "operations/test-1", done: false, videoUris: [] }),
       cancel: async () => ({ cancelled: true, alreadyDone: false }),
     });
     const r = createJob(base, "key-1");
@@ -57,13 +57,14 @@ describe("async job flow", () => {
     const lib = getDb().query("SELECT * FROM library WHERE job_id=?").get(r.jobId) as any;
     expect(lib).toBeTruthy();
     expect(lib.cost_estimate).toBeGreaterThan(0);
+    expect(lib.video_url).toBe("gs://b/veo/out.mp4");
     setDriverForTests(null);
   });
 
   test("idempotency-key dedupes", () => {
     setDriverForTests({
       submit: async () => "operations/dedupe",
-      get: async () => ({ name: "operations/dedupe", done: false }),
+      get: async () => ({ name: "operations/dedupe", done: false, videoUris: [] }),
       cancel: async () => ({ cancelled: true, alreadyDone: false }),
     });
     const a = createJob(base, "same-key");
@@ -82,7 +83,7 @@ describe("async job flow", () => {
         await Bun.sleep(50);
         return "operations/cancel-me";
       },
-      get: async () => ({ name: "operations/cancel-me", done: false }),
+      get: async () => ({ name: "operations/cancel-me", done: false, videoUris: [] }),
       cancel: async () => ({ cancelled: true, alreadyDone: false }),
     });
     const r = createJob({ ...base, prompt: "cancel clip" }, "key-cancel");
@@ -94,12 +95,58 @@ describe("async job flow", () => {
     setDriverForTests(null);
   });
 
-  test("vertex misconfiguration fails job with clear error", async () => {
-    const { vertexConfigured } = await import("../src/vertex.ts");
-    // In CI there are no creds; submit must throw E_VERTEX_NOT_CONFIGURED
-    if (!vertexConfigured()) {
-      const { vertexSubmit } = await import("../src/vertex.ts");
-      await expect(vertexSubmit({ model: "m", prompt: "p", aspectRatio: "16:9", durationSeconds: 8, audio: false, sampleCount: 1 })).rejects.toThrow();
+  test("missing auth fails job with actionable error", async () => {
+    setDriverForTests(null);
+    delete process.env.VERTEX_ACCESS_TOKEN;
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+    delete process.env.VERTEXAI_PROJECT;
+    const { resolveAuth } = await import("../src/auth.ts");
+    // Default mode is service-account-only; nothing pasted → clear guidance.
+    let code = "NO_THROW";
+    try {
+      await resolveAuth("prj_test");
+    } catch (e: any) {
+      code = String(e?.code ?? e?.message ?? e);
     }
+    expect(code).toBe("E_SA_MISSING");
+  });
+
+  test("extend without GCS source fails with guidance", async () => {
+    setDriverForTests({
+      submit: async () => {
+        throw new Error("must not submit without a GCS source");
+      },
+      get: async () => ({ name: "operations/x", done: false, videoUris: [] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob(
+      {
+        projectId: "prj_test",
+        mode: "extend",
+        model: "veo-3.1-generate-001",
+        prompt: "continue",
+        resolution: "720p",
+        aspect: "16:9",
+        durationSeconds: 7,
+        audio: true,
+        sampleCount: 1,
+        refAssetIds: [],
+        sourceVideoId: "vid_missing",
+        sourceResolution: "720p",
+      },
+      "key-ext-nogcs",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 50 && (getJob(r.jobId) as any).status === "queued"; i++) {
+      await Bun.sleep(20);
+    }
+    for (let i = 0; i < 50 && !((getJob(r.jobId) as any).status === "failed"); i++) {
+      await Bun.sleep(20);
+    }
+    expect((getJob(r.jobId) as any).status).toBe("failed");
+    expect((getJob(r.jobId) as any).error).toContain("EXTEND_NEEDS_GCS");
+    setDriverForTests(null);
   });
 });

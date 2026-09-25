@@ -3,8 +3,7 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Plus, Shapes, Trash2, Upload, WandSparkles } from "lucide-react";
-import { EL_CATS } from "@/mock/catalog.mock";
-import { pic, uid } from "@/lib/format";
+import { EL_CATS } from "@/lib/catalog";
 import { fileToImage } from "@/lib/media";
 import { elementFormSchema, type ElementCat } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
@@ -18,7 +17,7 @@ export function ElementsView() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
   const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
-  const updateActive = useStudio((s) => s.updateActive);
+  const addElement = useStudio((s) => s.addElement);
   const attachElement = useStudio((s) => s.attachElement);
   const push = useToasts((s) => s.push);
   const router = useRouter();
@@ -100,15 +99,17 @@ export function ElementsView() {
         <ElementModal
           cat={cat}
           close={() => set({ add: "" })}
-          save={(img, name, note) => {
+          save={async (img, name, note) => {
             const parsed = elementFormSchema.safeParse({ name: name.trim() || "Untitled", img, note: note.trim() });
             if (!parsed.success) {
               push(parsed.error.issues[0]?.message ?? "Invalid element", { icon: "!", tone: "danger" });
               return;
             }
-            updateActive((draft) => {
-              draft.elements[cat].unshift({ id: uid("el"), ...parsed.data });
-            });
+            const r = await addElement(cat, { name: parsed.data.name, imageUrl: parsed.data.img, note: parsed.data.note });
+            if (!r.ok) {
+              push(r.error ?? "Could not add element", { icon: "!", tone: "danger" });
+              return;
+            }
             push("Element added", { icon: "✓" });
             set({ add: "" });
           }}
@@ -138,7 +139,12 @@ function ElementModal({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          save(up || url.trim() || pic(uid("el"), 400, 300), name, note);
+          const img = up || url.trim();
+          if (!img) {
+            push("Add an image URL or upload a file", { icon: "!", tone: "danger" });
+            return;
+          }
+          save(img, name, note);
           close();
         }}
         className="space-y-4"
@@ -192,7 +198,7 @@ function ElementModal({
 }
 
 function DeleteElementConfirm({ cat, id, close }: { cat: ElementCat; id: string; close: () => void }) {
-  const updateActive = useStudio((s) => s.updateActive);
+  const deleteElement = useStudio((s) => s.deleteElement);
   const project = useStudio((s) => s.projects.find((x) => x.id === (s.activeId ?? "")) ?? s.projects[0]);
   const push = useToasts((s) => s.push);
   const el = project?.elements[cat]?.find((x) => x.id === id);
@@ -208,10 +214,7 @@ function DeleteElementConfirm({ cat, id, close }: { cat: ElementCat; id: string;
         <SlateButton
           variant="danger"
           onClick={() => {
-            updateActive((draft) => {
-              draft.elements[cat] = draft.elements[cat].filter((x) => x.id !== id);
-            });
-            push("Element deleted", { icon: "🗑", tone: "info" });
+            void deleteElement(id).then(() => push("Element deleted", { icon: "🗑", tone: "info" }));
             close();
           }}
         >

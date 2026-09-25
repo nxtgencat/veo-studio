@@ -1,9 +1,6 @@
 // Pure formatting helpers — no React, no store. DRY across views.
-export const uid = (p = "id") => `${p}-${Math.random().toString(36).slice(2, 8)}`;
 export const money = (n: number) => `$${(Number(n) || 0).toFixed(2)}`;
 export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-export const pic = (s: string, w = 640, h = 360) =>
-  `https://picsum.photos/seed/${encodeURIComponent(s)}/${w}/${h}`;
 
 export function ago(ts: number): string {
   const s = Math.max(0, (Date.now() - ts) / 1e3);

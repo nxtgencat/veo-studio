@@ -14,6 +14,9 @@ export default function Home() {
   const hydrated = useHydrateStudio();
   const projects = useStudio((s) => s.projects);
   const activeId = useStudio((s) => s.activeId);
+  const serverUp = useStudio((s) => s.serverUp);
+  const lastError = useStudio((s) => s.lastError);
+  const retry = useStudio((s) => s.retry);
   const createProject = useStudio((s) => s.createProject);
 
   useEffect(() => {
@@ -23,6 +26,26 @@ export default function Home() {
   }, [hydrated, projects, activeId, router]);
 
   if (!hydrated) return null;
+  if (!serverUp) {
+    return (
+      <div className="slate-app h-[100dvh] flex flex-col overflow-hidden">
+        <main className="flex-1 min-h-0 overflow-y-auto grid place-items-center p-6">
+          <div className="w-full max-w-[480px]">
+            <SlateEmpty
+              icon={<Clapperboard className="size-6 text-[#C9432E]" />}
+              title="API server unreachable"
+              sub={lastError || "Start it with `bun run dev` (web :3000 + API :8787)."}
+              action={
+                <SlateButton variant="primary" onClick={() => void retry()}>
+                  Retry connection
+                </SlateButton>
+              }
+            />
+          </div>
+        </main>
+      </div>
+    );
+  }
   if (projects.length > 0) return null;
 
   return (
@@ -43,8 +66,7 @@ export default function Home() {
               <SlateButton
                 variant="primary"
                 onClick={() => {
-                  const id = createProject("Untitled project");
-                  router.push(`/p/${id}/generate`);
+                  void createProject("Untitled project").then((id) => router.push(`/p/${id}/generate`));
                 }}
               >
                 <Plus className="size-4" /> Create project
