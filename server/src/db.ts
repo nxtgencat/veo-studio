@@ -54,6 +54,8 @@ export function migrate(d: Database) {
       webhook_url TEXT NOT NULL DEFAULT '',
       submitted_at TEXT NOT NULL DEFAULT '',
       duration_ms INTEGER NOT NULL DEFAULT 0,
+      person TEXT NOT NULL DEFAULT 'allow_adult',
+      negative_prompt TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(project_id, idempotency_key)
@@ -75,6 +77,8 @@ export function migrate(d: Database) {
       video_url TEXT NOT NULL DEFAULT '',
       thumb_url TEXT NOT NULL DEFAULT '',
       gcs_uri TEXT NOT NULL DEFAULT '',
+      person TEXT NOT NULL DEFAULT 'allow_adult',
+      negative_prompt TEXT NOT NULL DEFAULT '',
       inputs_json TEXT NOT NULL DEFAULT '{}',
       vertex_operation TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
@@ -109,6 +113,17 @@ export function migrate(d: Database) {
   }
   if (!jobCols.some((c) => c.name === "duration_ms")) {
     d.exec("ALTER TABLE jobs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0");
+  }
+  for (const [table, column, ddl] of [
+    ["jobs", "person", "TEXT NOT NULL DEFAULT 'allow_adult'"],
+    ["jobs", "negative_prompt", "TEXT NOT NULL DEFAULT ''"],
+    ["library", "person", "TEXT NOT NULL DEFAULT 'allow_adult'"],
+    ["library", "negative_prompt", "TEXT NOT NULL DEFAULT ''"],
+  ] as const) {
+    const existing = d.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!existing.some((c) => c.name === column)) {
+      d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
   }
 }
 

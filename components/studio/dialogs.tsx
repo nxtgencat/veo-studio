@@ -268,6 +268,7 @@ function AdvancedDialog({ close }: { close: () => void }) {
   const [person, setPerson] = useState<"allow_adult" | "disallow">(
     project?.gen.person === "disallow" ? "disallow" : "allow_adult",
   );
+  const [negative, setNegative] = useState(project?.gen.negativePrompt ?? "");
   if (!project) return null;
   return (
     <SlateModal onClose={close}>
@@ -292,17 +293,21 @@ function AdvancedDialog({ close }: { close: () => void }) {
             ))}
           />
         </div>
+        <div>
+          <SlateLabel>Negative prompt <span className="text-muted font-normal">(things to avoid)</span></SlateLabel>
+          <SlateTextarea rows={2} value={negative} onChange={(e) => setNegative(e.target.value)} placeholder="e.g. blurry, watermark, extra limbs" />
+        </div>
         <div className="flex gap-2 justify-end pt-1">
           <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
           <SlateButton
             variant="primary"
             onClick={() => {
-              const parsed = advancedFormSchema.safeParse({ seed, person });
+              const parsed = advancedFormSchema.safeParse({ seed, person, negativePrompt: negative });
               if (!parsed.success) {
                 push("Invalid advanced settings", { icon: "!", tone: "danger" });
                 return;
               }
-              updateActive((d) => { d.gen.seed = parsed.data.seed; d.gen.person = parsed.data.person; });
+              updateActive((d) => { d.gen.seed = parsed.data.seed; d.gen.person = parsed.data.person; d.gen.negativePrompt = parsed.data.negativePrompt; });
               push("Advanced settings saved", { icon: "✓" });
               close();
             }}
@@ -492,6 +497,12 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
           <p className="slate-lbl">Prompt{v.mode === "extend" ? " (continuation)" : ""}</p>
           <p className="text-[13px] leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>{v.prompt || "—"}</p>
         </div>
+        {v.negativePrompt && (
+          <div>
+            <p className="slate-lbl">Negative prompt</p>
+            <p className="text-[13px] leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>{v.negativePrompt}</p>
+          </div>
+        )}
         {v.mode === "i2v" && v.inputs.image && (
           <div>
             <p className="slate-lbl">Source image</p>

@@ -333,6 +333,8 @@ function formatJob(row: any) {
     audio: !!row.audio,
     sampleCount: row.sample_count,
     seed: row.seed,
+    person: row.person ?? "allow_adult",
+    negativePrompt: row.negative_prompt ?? "",
     status: row.status,
     progress: row.progress,
     error: row.error,

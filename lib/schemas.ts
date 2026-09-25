@@ -17,6 +17,7 @@ export const genDraftSchema = z.object({
   seed: z.union([z.string(), z.number()]),
   person: z.enum(["allow_adult", "disallow"]),
   enhance: z.boolean(),
+  negativePrompt: z.string().max(2000).default(""),
   prompt: z.string().max(5000),
   image: z.string().max(2000000),
   first: z.string().max(2000000),
@@ -79,6 +80,7 @@ export const videoItemSchema = z.object({
   error: z.string(),
   inputs: videoInputsSchema,
   youtube: youtubeStateSchema.optional(),
+  negativePrompt: z.string().optional(),
 });
 
 export const elementItemSchema = z.object({
@@ -148,6 +150,7 @@ export const elementFormSchema = z.object({
 export const advancedFormSchema = z.object({
   seed: z.union([z.string(), z.number()]),
   person: z.enum(["allow_adult", "disallow"]),
+  negativePrompt: z.string().max(2000).default(""),
 });
 export const ytPublishSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(100),

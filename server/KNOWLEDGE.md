@@ -112,6 +112,23 @@ sites is a crop, not native).
   `gcs_uri` → on-disk `/media` bytes (≤20 MB inline) → request inline
   `sourceVideoBytes` → clear `EXTEND_NEEDS_SOURCE` / `EXTEND_SOURCE_TOO_BIG`.
 
+## 3a. Vertex REST wire notes (audited Sep 2026)
+
+- Endpoint `POST …/publishers/google/models/{model}:predictLongRunning`;
+  poll `POST …/models/{model}:fetchPredictOperation` (`{"operationName"}`).
+  Generic `GET /v1/{op}` 404s for publisher ops; no cancel RPC exists.
+- Parameters: `aspectRatio`, `durationSeconds` (4/6/8; Veo 2: 5–8),
+  `sampleCount` 1–4, `seed` uint32, `personGeneration`
+  (`allow_adult`/`disallow`), `negativePrompt`, `resolution` (Veo 3 only),
+  `storageUri`. `generateAudio` also sent (documented REST field).
+- **Wire case: lowercase `"4k"`.** Docs list `"720p"/"1080p"/"4k"`;
+  the server maps UI `"4K"` at the boundary.
+- **1080p/4K are 8s-only** (4K forces 8s; shorter high-res rejected).
+- Instances: `{prompt}`, `image: {bytesBase64Encoded, mimeType}`,
+  `lastFrame: {…}`, `referenceImages: [{image: {…}, referenceType: "asset"}]`,
+  `video: {gcsUri, mimeType}` (extend; inline bytes accepted per SDK type).
+- No newer models found (latest remains Veo 3.1 family; Veo 3 retires 2026-06-30).
+
 ## 3b. Image-input limits (all slots)
 
 Counts per request — slots are mutually exclusive (one slot only, enforced

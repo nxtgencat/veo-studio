@@ -35,6 +35,7 @@ function defaultGen(): GenDraft {
     seed: "",
     person: "allow_adult",
     enhance: true,
+    negativePrompt: "",
     prompt: "",
     image: "",
     first: "",
@@ -135,7 +136,7 @@ function toVideoItem(
     dur: v.duration_seconds,
     audio: !!v.audio,
     seed: "",
-    person: "allow_adult",
+    person: v.person === "disallow" ? "disallow" : "allow_adult",
     enhance: false,
     batch: 1,
     status: "success",
@@ -154,6 +155,7 @@ function toVideoItem(
     error: "",
     inputs,
     youtube: youtube[v.id],
+    negativePrompt: v.negative_prompt || undefined,
   };
 }
 
@@ -173,9 +175,10 @@ function jobToVideoItem(
     dur: j.durationSeconds,
     audio: j.audio,
     seed: typeof j.seed === "number" ? j.seed : "",
-    person: "allow_adult",
+    person: j.person === "disallow" ? "disallow" : "allow_adult",
     enhance: false,
     batch: 1,
+    negativePrompt: j.negativePrompt || undefined,
     elapsedMs: j.elapsedMs ?? 0,
     etaMs: j.etaMs,
     etaSource: j.etaSource,
@@ -477,6 +480,8 @@ export const useStudio = create<StudioState>()((set, get) => {
       const durList = m.dur;
       if (!resList.includes(draft.gen.res)) draft.gen.res = (resList[0] ?? "720p") as GenDraft["res"];
       if (!durList.includes(draft.gen.dur)) draft.gen.dur = durList[durList.length - 1] ?? 8;
+      // 1080p/4K render 8s only — snap when the resolution demands it.
+      if (draft.gen.res !== "720p" && draft.gen.dur !== 8) draft.gen.dur = 8;
       if (draft.gen.mode === "r2v") draft.gen.dur = 8;
       if (m.silent) draft.gen.audio = false;
       local.drafts[activeId] = draft.gen;
@@ -548,6 +553,8 @@ export const useStudio = create<StudioState>()((set, get) => {
           durationSeconds: dur,
           audio,
           sampleCount: 1,
+          person: g.person,
+          ...(g.negativePrompt.trim() ? { negativePrompt: g.negativePrompt.trim().slice(0, 2000) } : {}),
           ...(seed != null && !Number.isNaN(seed) ? { seed } : {}),
         };
         if (g.mode === "i2v") base.imageAssetId = await resolveAsset(g.image, "frames", "Source still");
@@ -729,8 +736,9 @@ export const useStudio = create<StudioState>()((set, get) => {
         audio: v.audio,
         batch: 1,
         seed: v.seed ?? "",
-        person: "allow_adult",
+        person: v.person === "disallow" ? "disallow" : "allow_adult",
         enhance: true,
+        negativePrompt: v.negativePrompt ?? "",
         prompt: v.prompt,
         image: wantImage ? need("image", v.inputs.image) : "",
         first: wantFrames ? need("first frame", v.inputs.first) : "",

@@ -188,6 +188,17 @@ describe("validation", () => {
     expect(validateJob(clean)).toBeNull();
   });
 
+  test("1080p/4K require 8s", () => {
+    const base: JobInput = {
+      projectId: "p", mode: "t2v", model: "veo-3.1-generate-001", prompt: "x",
+      resolution: "1080p", aspect: "16:9", durationSeconds: 6, audio: true,
+      sampleCount: 1, refAssetIds: [],
+    };
+    expect(validateJob(base)?.code).toBe("DURATION_UNSUPPORTED");
+    expect(validateJob({ ...base, durationSeconds: 8 })).toBeNull();
+    expect(validateJob({ ...base, resolution: "720p", durationSeconds: 6 })).toBeNull();
+  });
+
   test("r2v forces 8s", () => {
     const r = validateJob({ ...base, mode: "r2v", durationSeconds: 4, refAssetIds: ["r1"] });
     expect(r?.code).toBe("DURATION_UNSUPPORTED");

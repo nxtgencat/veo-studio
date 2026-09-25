@@ -120,13 +120,13 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
   db.query(
     `INSERT INTO jobs (id, project_id, idempotency_key, mode, model, prompt, resolution, aspect,
       duration_seconds, audio, sample_count, seed, inputs_json, status, progress, cost_estimate,
-      webhook_url, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      webhook_url, person, negative_prompt, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id, input.projectId, idempotencyKey, input.mode, input.model, input.prompt,
     input.resolution, input.aspect, input.durationSeconds, input.audio ? 1 : 0,
     input.sampleCount, input.seed ?? null, JSON.stringify(inputs), "queued", 0,
-    cost, input.webhookUrl ?? "", now, now,
+    cost, input.webhookUrl ?? "", input.person ?? "allow_adult", input.negativePrompt ?? "", now, now,
   );
   log.info({ jobId: id, mode: input.mode, model: input.model, cost }, "job created");
   if (input.mode === "extend" && input.sourceVideoBytes) {
@@ -172,6 +172,8 @@ async function runInBackground(jobId: string, resumeOp?: string) {
       audio: !!row.audio,
       sampleCount: row.sample_count,
       seed: row.seed ?? undefined,
+      person: row.person === "disallow" ? "disallow" : "allow_adult",
+      negativePrompt: row.negative_prompt ?? undefined,
     };
     const settings = getSettings(row.project_id);
     if (settings.useBucket && settings.bucket) {
@@ -435,11 +437,12 @@ async function succeedJob(
   stampDuration(jobId, row.submitted_at);
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
-      duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, inputs_json, vertex_operation, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, person, negative_prompt, inputs_json, vertex_operation, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     libId, row.project_id, jobId, row.mode, row.model, row.prompt, row.resolution, row.aspect,
-    row.duration_seconds, row.audio, "succeeded", row.cost_estimate, stored.url, gs, row.inputs_json,
+    row.duration_seconds, row.audio, "succeeded", row.cost_estimate, stored.url, gs,
+    row.person ?? "allow_adult", row.negative_prompt ?? "", row.inputs_json,
     row.vertex_operation, now, now,
   );
   log.info({ jobId, libId, videoUrl: stored.url }, "job succeeded");

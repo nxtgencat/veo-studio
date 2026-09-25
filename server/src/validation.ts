@@ -18,7 +18,9 @@ export const jobInputSchema = z.object({
   durationSeconds: z.number().int().min(1).max(60),
   audio: z.boolean().default(true),
   sampleCount: z.number().int().min(1).max(4).default(1),
-  seed: z.number().int().min(0).optional(),
+  seed: z.number().int().min(0).max(4294967295).optional(),
+  person: z.enum(["allow_adult", "disallow"]).optional(),
+  negativePrompt: z.string().max(2000).optional(),
   imageAssetId: z.string().optional(),
   firstFrameAssetId: z.string().optional(),
   lastFrameAssetId: z.string().optional(),
@@ -72,6 +74,13 @@ export function validateJob(input: JobInput): ValidationError | null {
       return {
         code: "DURATION_UNSUPPORTED",
         message: `${model.id}/${mode} allows durations [${allowed.join(",")}], got ${input.durationSeconds}`,
+      };
+    }
+    // 1080p/4K support 8s only (Vertex rejects shorter high-res renders).
+    if (input.resolution !== "720p" && input.durationSeconds !== 8) {
+      return {
+        code: "DURATION_UNSUPPORTED",
+        message: `${input.resolution} supports only 8s duration, got ${input.durationSeconds}s`,
       };
     }
   }

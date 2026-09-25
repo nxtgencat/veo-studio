@@ -502,7 +502,8 @@ export function GenerateView() {
                   label={`${g.dur}s`}
                   title="Duration"
                   menu={(close) => [4, 5, 6, 7, 8].map((d) => {
-                    const dis = !(m.dur as readonly number[]).includes(d) || (g.mode === "r2v" && d !== 8);
+                    // 1080p/4K render 8s only (Vertex rejects shorter high-res).
+                    const dis = !(m.dur as readonly number[]).includes(d) || (g.mode === "r2v" && d !== 8) || (g.res !== "720p" && d !== 8);
                     return (
                       <SlateOption
                         key={d} active={g.dur === d}
