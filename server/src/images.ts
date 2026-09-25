@@ -22,9 +22,7 @@ export function parseDataUrl(url: string): ParsedDataUrl | null {
   const m = /^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(url.trim());
   if (!m) return null;
   const mime = (m[1] ?? "").toLowerCase();
-  const bin = atob((m[2] ?? "").replace(/\s+/g, ""));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const bytes = Uint8Array.fromBase64((m[2] ?? "").replace(/\s+/g, ""));
   return { mime, bytes };
 }
 
@@ -43,20 +41,20 @@ export function sniffImageMime(bytes: Uint8Array): AllowedImageMime | null {
   return null;
 }
 
-function tooLarge(size: number): never {
+function tooLarge(size: number, max = IMAGE_MAX_BYTES): never {
   throw Object.assign(
-    new Error(`Image is ${(size / 1048576).toFixed(1)} MB — limit is 20 MB per image`),
-    { code: "E_IMAGE_TOO_LARGE" },
+    new Error(`Payload is ${(size / 1048576).toFixed(1)} MB — limit is ${(max / 1048576).toFixed(0)} MB`),
+    { code: max === IMAGE_MAX_BYTES ? "E_IMAGE_TOO_LARGE" : "E_MEDIA_TOO_LARGE" },
   );
 }
 
-async function readCapped(res: Response): Promise<Uint8Array> {
+export async function readCapped(res: Response, maxBytes = IMAGE_MAX_BYTES): Promise<Uint8Array> {
   const len = Number(res.headers.get("content-length") ?? 0);
-  if (len > IMAGE_MAX_BYTES) tooLarge(len);
+  if (len > maxBytes) tooLarge(len, maxBytes);
   const reader = res.body?.getReader();
   if (!reader) {
     const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.length > IMAGE_MAX_BYTES) tooLarge(buf.length);
+    if (buf.length > maxBytes) tooLarge(buf.length, maxBytes);
     return buf;
   }
   const chunks: Uint8Array[] = [];
@@ -66,9 +64,9 @@ async function readCapped(res: Response): Promise<Uint8Array> {
     if (done) break;
     if (value) {
       total += value.length;
-      if (total > IMAGE_MAX_BYTES) {
+      if (total > maxBytes) {
         void reader.cancel().catch(() => {});
-        tooLarge(total);
+        tooLarge(total, maxBytes);
       }
       chunks.push(value);
     }
@@ -111,7 +109,7 @@ export async function elementImageBytes(elementId: string, projectId: string): P
     if (data.bytes.length > IMAGE_MAX_BYTES) tooLarge(data.bytes.length);
     const sniffed = sniffImageMime(data.bytes);
     if (!sniffed) throw Object.assign(new Error("Image bytes are not valid JPEG/PNG"), { code: "E_IMAGE_TYPE" });
-    return { base64: Buffer.from(data.bytes).toString("base64"), mime: sniffed };
+    return { base64: data.bytes.toBase64(), mime: sniffed };
   }
 
   let res: Response;
@@ -134,5 +132,5 @@ export async function elementImageBytes(elementId: string, projectId: string): P
       { code: "E_IMAGE_TYPE" },
     );
   }
-  return { base64: Buffer.from(bytes).toString("base64"), mime: sniffed };
+  return { base64: bytes.toBase64(), mime: sniffed };
 }

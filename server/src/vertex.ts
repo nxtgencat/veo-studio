@@ -38,7 +38,16 @@ export type VertexSubmitParams = {
   storageUri?: string;
 };
 
-export type VertexOperation = { name: string; done: boolean; error?: string; videoUris: string[] };
+export type VertexOperation = {
+  name: string;
+  done: boolean;
+  error?: string;
+  videoUris: string[];
+  /** First inline payload found (no-bucket outputs), capped — may be absent. */
+  videoBytes?: { base64: string; mime: string };
+};
+
+export const INLINE_RESPONSE_MAX = 100 * 1024 * 1024;
 
 export function vertexEnvCtx(): VertexCtx {
   const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.VERTEXAI_PROJECT ?? "";
@@ -134,6 +143,30 @@ export function collectVideoUris(payload: unknown): string[] {
   return [...out];
 }
 
+/** First inline video payload (bytesBase64Encoded / videoBytes), capped. */
+export function collectVideoBytes(payload: unknown): { base64: string; mime: string } | null {
+  let found: { base64: string; mime: string } | null = null;
+  const walk = (v: unknown, depth: number) => {
+    if (found || depth > 8) return;
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x, depth + 1);
+      return;
+    }
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const b64 = o.bytesBase64Encoded ?? o.videoBytes;
+      if (typeof b64 === "string" && b64.length > 1024 && b64.length <= INLINE_RESPONSE_MAX) {
+        const mime = typeof o.mimeType === "string" ? o.mimeType : "video/mp4";
+        found = { base64: b64, mime };
+        return;
+      }
+      for (const x of Object.values(o)) walk(x, depth + 1);
+    }
+  };
+  walk(payload, 0);
+  return found;
+}
+
 export async function vertexGet(name: string, ctx: VertexCtx): Promise<VertexOperation> {
   const url = `https://${ctx.location}-aiplatform.googleapis.com/v1/${name}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.token}` } });
@@ -145,11 +178,14 @@ export async function vertexGet(name: string, ctx: VertexCtx): Promise<VertexOpe
     });
   }
   const json = (await res.json()) as { done?: boolean; error?: { message?: string }; response?: unknown };
+  const uris = json.done ? collectVideoUris(json.response) : [];
+  const inline = json.done ? collectVideoBytes(json.response) : null;
   return {
     name,
     done: !!json.done,
     error: json.error?.message,
-    videoUris: json.done ? collectVideoUris(json.response) : [],
+    videoUris: uris,
+    ...(inline ? { videoBytes: inline } : {}),
   };
 }
 

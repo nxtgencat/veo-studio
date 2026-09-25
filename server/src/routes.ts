@@ -5,6 +5,7 @@ import { getDb, nowIso } from "./db.ts";
 import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
+import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -312,6 +313,60 @@ function formatJob(row: any) {
   };
 }
 
+// ---------- media file store ----------
+app.post("/media/upload", async (c) => {
+  const form = await c.req.formData().catch(() => null);
+  const file = form?.get("file");
+  if (!(file instanceof Blob)) return err(c, 400, "FILE_REQUIRED", "Multipart field 'file' is required");
+  if (!file.size) return err(c, 400, "EMPTY_FILE", "Uploaded file is empty");
+  if (file.size > MEDIA_MAX_BYTES) return err(c, 413, "MEDIA_TOO_LARGE", "Limit is 200 MB per file");
+  const mime = (file as File).type || "application/octet-stream";
+  if (!mime.startsWith("video/") && !mime.startsWith("image/")) {
+    return err(c, 415, "MEDIA_TYPE", `Only video/* and image/* uploads, got ${mime}`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    const saved = await saveMedia(bytes, mime);
+    return c.json(saved, 201);
+  } catch (e: any) {
+    return err(c, 422, e?.code ?? "UPLOAD_FAILED", e?.message ?? "Could not store file");
+  }
+});
+
+app.get("/media/:id", (c) => {
+  const hit = getMedia(c.req.param("id"));
+  if (!hit) return err(c, 404, "MEDIA_NOT_FOUND", "No such file");
+  const file = Bun.file(hit.path);
+  const size = file.size || hit.bytes;
+  const range = c.req.header("range");
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (m) {
+      const start = m[1] ? Number(m[1]) : 0;
+      const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+      if (Number.isFinite(start) && Number.isFinite(end) && start <= end && start < size) {
+        const partial: Blob = file.slice(start, end + 1);
+        return new Response(partial, {
+          status: 206,
+          headers: {
+            "Content-Type": hit.mime,
+            "Content-Range": `bytes ${start}-${end}/${size}`,
+            "Content-Length": String(end - start + 1),
+            "Accept-Ranges": "bytes",
+          },
+        });
+      }
+      return new Response("Range Not Satisfiable", {
+        status: 416,
+        headers: { "Content-Range": `bytes */${size}` },
+      });
+    }
+  }
+  return new Response(file as unknown as Blob, {
+    headers: { "Content-Type": hit.mime, "Content-Length": String(size), "Accept-Ranges": "bytes" },
+  });
+});
+
 // ---------- library ----------
 app.get("/library", (c) => {
   const projectId = c.req.query("projectId");
@@ -328,9 +383,14 @@ app.get("/library/:id", (c) => {
   return c.json(row);
 });
 
-app.delete("/library/:id", (c) => {
-  const r = getDb().query("DELETE FROM library WHERE id=?").run(c.req.param("id"));
-  if (!r.changes) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
+app.delete("/library/:id", async (c) => {
+  const db = getDb();
+  const row = db.query("SELECT video_url FROM library WHERE id=?").get(c.req.param("id")) as { video_url: string } | null;
+  if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
+  db.query("DELETE FROM library WHERE id=?").run(c.req.param("id"));
+  // Drop the server-hosted file too (GCS objects are left alone).
+  const mid = mediaIdFromUrl(row.video_url);
+  if (mid) await deleteMedia(mid);
   return c.json({ deleted: true });
 });
 
@@ -342,6 +402,7 @@ const importSchema = z.object({
   durationSeconds: z.number().int().min(1).max(3600).default(8),
   audio: z.boolean().default(true),
   thumbDataUrl: z.string().max(2000000).default(""),
+  mediaId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
 });
 
 app.post("/library/import", async (c) => {
@@ -351,18 +412,24 @@ app.post("/library/import", async (c) => {
   if (!db.query("SELECT id FROM projects WHERE id=?").get(parsed.data.projectId)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
+  let videoUrl = "";
+  if (parsed.data.mediaId) {
+    const hit = getMedia(parsed.data.mediaId);
+    if (!hit) return err(c, 422, "MEDIA_NOT_FOUND", "Upload the file via POST /media/upload first");
+    videoUrl = `/media/${parsed.data.mediaId}`;
+  }
   const id = Bun.randomUUIDv7();
   const now = nowIso();
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
-      duration_seconds, audio, status, cost_estimate, thumb_url, inputs_json, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      duration_seconds, audio, status, cost_estimate, video_url, thumb_url, inputs_json, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id, parsed.data.projectId, `import-${id}`, "t2v", "import", parsed.data.prompt,
     parsed.data.resolution, parsed.data.aspect, parsed.data.durationSeconds,
-    parsed.data.audio ? 1 : 0, "succeeded", 0, parsed.data.thumbDataUrl, "{}", now, now,
+    parsed.data.audio ? 1 : 0, "succeeded", 0, videoUrl, parsed.data.thumbDataUrl, "{}", now, now,
   );
-  logger.info({ id, projectId: parsed.data.projectId }, "video imported");
+  logger.info({ id, projectId: parsed.data.projectId, videoUrl }, "video imported");
   return c.json({ id }, 201);
 });
 

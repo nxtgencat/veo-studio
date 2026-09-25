@@ -110,8 +110,30 @@ export const api = {
   listLibrary: (projectId: string) =>
     req<{ videos: ServerVideo[] }>(`/library?projectId=${encodeURIComponent(projectId)}`),
   deleteVideo: (id: string) => req<{ deleted: boolean }>(`/library/${id}`, { method: "DELETE" }),
-  importVideo: (body: { projectId: string; prompt: string; resolution: string; aspect: string; durationSeconds: number; audio: boolean; thumbDataUrl: string }) =>
+  importVideo: (body: { projectId: string; prompt: string; resolution: string; aspect: string; durationSeconds: number; audio: boolean; thumbDataUrl: string; mediaId?: string }) =>
     req<{ id: string }>("/library/import", { method: "POST", body: JSON.stringify(body) }),
+
+  uploadMedia: async (file: File): Promise<{ id: string; url: string; bytes: number; mime: string }> => {
+    let res: Response;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      res = await fetch(`${BASE}/media/upload`, { method: "POST", body: fd });
+    } catch (e) {
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+    }
+    const json = (await res.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      id?: string;
+      url?: string;
+      bytes?: number;
+      mime?: string;
+    };
+    if (!res.ok || !json.id || !json.url) {
+      throw new ApiError(res.status, json.error?.code ?? "UPLOAD_FAILED", json.error?.message ?? `Upload failed (${res.status})`);
+    }
+    return { id: json.id, url: json.url, bytes: json.bytes ?? 0, mime: json.mime ?? "" };
+  },
 };
 
 export function apiBase(): string {

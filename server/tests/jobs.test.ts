@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.env.SQLITE_FILE = ":memory:";
 process.env.JOB_POLL_MS = "10";
 process.env.JOB_POLL_ATTEMPTS = "50";
+process.env.MEDIA_DIR = join(tmpdir(), `veo-media-jobs-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { cancelJob, createJob, getJob, setDriverForTests } from "../src/jobs.ts";
@@ -25,6 +28,23 @@ function seedProject() {
   getDb()
     .query("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?,?,?,?)")
     .run("prj_test", "Test", new Date().toISOString(), new Date().toISOString());
+}
+
+async function makeSaJson(email: string): Promise<string> {
+  const pair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const der = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+  let bin = "";
+  for (const b of der) bin += String.fromCharCode(b);
+  return JSON.stringify({
+    type: "service_account",
+    project_id: "p",
+    private_key: `-----BEGIN PRIVATE KEY-----\n${btoa(bin)}\n-----END PRIVATE KEY-----\n`,
+    client_email: email,
+  });
 }
 
 beforeEach(() => {
@@ -121,6 +141,42 @@ describe("async job flow", () => {
     expect(seen?.imageBytes).toBe(PNG_1PX);
     expect(seen?.imageMimeType).toBe("image/png");
     setDriverForTests(null);
+  });
+
+  test("succeeded bucket output is archived server-side", async () => {
+    const { saveSettings } = await import("../src/auth.ts");
+    saveSettings("prj_test", { saJson: await makeSaJson("arc@p.iam.gserviceaccount.com"), bucket: "test-bucket-1" });
+    const orig = globalThis.fetch;
+    (globalThis as any).fetch = async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(new Uint8Array([9, 9, 9, 9]), {
+        status: 200,
+        headers: { "Content-Type": "video/mp4" },
+      });
+    };
+    setDriverForTests({
+      submit: async () => "operations/arc",
+      get: async () => ({ name: "operations/arc", done: true, videoUris: ["gs://b/veo/out.mp4"] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    try {
+      const { createJob, getJob } = await import("../src/jobs.ts");
+      const r = createJob(base, "key-arc");
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
+        await Bun.sleep(20);
+      }
+      const lib = getDb().query("SELECT * FROM library WHERE job_id=?").get(r.jobId) as any;
+      expect(lib.video_url.startsWith("/media/")).toBe(true);
+      expect(lib.gcs_uri).toBe("gs://b/veo/out.mp4");
+    } finally {
+      (globalThis as any).fetch = orig;
+      setDriverForTests(null);
+    }
   });
 
   test("missing auth fails job with actionable error", async () => {

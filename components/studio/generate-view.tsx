@@ -18,7 +18,6 @@ import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateMenuRow, SlateOption } from "@/components/slate/dropdown";
 import { PageHead } from "@/components/slate/core";
 import { ModeBadge, ModeIcon, StatusBadge } from "@/components/studio/shared";
-import { pendingOf } from "@/lib/pricing";
 
 function SlotBox({
   img, emptyLabel, emptyIcon, onPick, onClear, tag,
@@ -88,6 +87,12 @@ export function GenerateView() {
     [g?.model, g?.res, g?.dur, g?.audio, g?.batch],
   );
   const cur = MODES.find((x) => x.id === g?.mode) ?? MODES[0];
+  // Recents thread is generations only — uploads live in Library → Uploaded.
+  const recents = useMemo(
+    () => (project?.library ?? []).filter((v) => !v.imported),
+    [project?.library],
+  );
+  const pendingCount = useMemo(() => recents.filter((v) => v.status === "pending").length, [recents]);
 
   if (!project || !g) return null;
   if (!capsReady) {
@@ -167,7 +172,7 @@ export function GenerateView() {
       )}
 
       <div className="flex-1 min-w-0 grid grid-cols-1 xl:grid-cols-2 content-start gap-2.5">
-        {!project.library.length ? (
+        {!recents.length ? (
           <div className="slate-card p-8 text-center xl:col-span-full max-w-[600px] w-full mx-auto">
             <div className="grid place-items-center w-12 h-12 rounded-full mx-auto mb-3" style={{ background: "var(--t-brand-bg)" }}>
               <Sparkles className="size-5 text-[#1C7247]" />
@@ -182,12 +187,12 @@ export function GenerateView() {
             <div className="xl:col-span-full">
               <PageHead
                 title="Recents"
-                sub={`${project.library.length} renders — click a card for player, config and cost.`}
+                sub={`${recents.length} renders — click a card for player, config and cost.`}
                 actions={
                   <>
-                    {pendingOf(project) > 0 && (
+                    {pendingCount > 0 && (
                       <SlateBadge tone="pending">
-                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> {pendingOf(project)} rendering
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> {pendingCount} rendering
                       </SlateBadge>
                     )}
                     <Link href={`/p/${projectId}/library`} className="slate-btn slate-btn-ghost slate-btn-sm no-underline">
@@ -197,7 +202,7 @@ export function GenerateView() {
                 }
               />
             </div>
-            {project.library.map((v) => (
+            {recents.map((v) => (
               <Link
                 key={v.id}
                 href={`/p/${projectId}/generate?video=${v.id}`}

@@ -5,7 +5,9 @@
 import { getDb, nowIso } from "./db.ts";
 import { getModel } from "./capabilities.ts";
 import { getSettings, resolveAuth } from "./auth.ts";
-import { elementImageBytes } from "./images.ts";
+import { downloadGcsUri } from "./gcs.ts";
+import { elementImageBytes, IMAGE_MAX_BYTES } from "./images.ts";
+import { getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
 import { estimateCost } from "./pricing.ts";
 import { validateJob, type JobInput } from "./validation.ts";
 import { childLogger } from "./logger.ts";
@@ -17,7 +19,13 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancell
 
 export type Driver = {
   submit: (p: vertex.VertexSubmitParams) => Promise<string>;
-  get: (name: string) => Promise<{ name: string; done: boolean; error?: string; videoUris: string[] }>;
+  get: (name: string) => Promise<{
+    name: string;
+    done: boolean;
+    error?: string;
+    videoUris: string[];
+    videoBytes?: { base64: string; mime: string };
+  }>;
   cancel: (name: string) => Promise<{ cancelled: boolean; alreadyDone: boolean }>;
 };
 
@@ -113,7 +121,9 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
   if (input.mode === "extend" && input.sourceVideoBytes) {
     pendingBytes.set(id, { bytes: input.sourceVideoBytes, mime: input.sourceVideoMimeType ?? "video/mp4" });
   }
-  void runInBackground(id);
+  // Never let a background crash surface as an unhandled rejection
+  // (e.g. DB reset under test teardown while a poll is in flight).
+  void runInBackground(id).catch((e) => log.error({ jobId: id, err: String(e) }, "background task crashed"));
   return { ok: true, jobId: id, deduped: false };
 }
 
@@ -184,12 +194,20 @@ async function runInBackground(jobId: string) {
       }
     }
     if (row.mode === "extend") {
-      const src = resolveExtendSource(row);
+      const src = await resolveExtendSource(row);
       if (!src) {
         failJob(
           jobId,
-          "EXTEND_NEEDS_SOURCE: extend needs the source video as sourceVideoGcsUri (gs://…, recommended) " +
-            "or inline sourceVideoBytes (≤20 MB). A library sourceVideoId only works when its video_url is gs://.",
+          "EXTEND_NEEDS_SOURCE: extend needs the source video as sourceVideoGcsUri (gs://…, recommended), " +
+            "a library video saved on this server, or inline sourceVideoBytes (≤20 MB).",
+        );
+        return;
+      }
+      if (src.diskTooBig) {
+        failJob(
+          jobId,
+          `EXTEND_SOURCE_TOO_BIG: source is ${(src.diskTooBig / 1048576).toFixed(1)} MB on this server — ` +
+            "inline extend caps at 20 MB. Put the file in your bucket and pass sourceVideoGcsUri.",
         );
         return;
       }
@@ -223,8 +241,10 @@ function authErrorHint(projectId: string): string {
   }
 }
 
-/** Extend source: explicit GCS URI, chained bucket output, or inline bytes. */
-function resolveExtendSource(row: any): { gcsUri?: string; bytes?: string; mime?: string } | null {
+/** Extend source: explicit GCS URI, chained output, on-disk bytes, inline bytes. */
+async function resolveExtendSource(
+  row: any,
+): Promise<{ gcsUri?: string; bytes?: string; mime?: string; diskTooBig?: number } | null> {
   try {
     const inputs = JSON.parse(row.inputs_json || "{}") as { sourceVideoGcsUri?: string; sourceVideoId?: string };
     if (inputs.sourceVideoGcsUri?.startsWith("gs://")) return { gcsUri: inputs.sourceVideoGcsUri };
@@ -234,8 +254,24 @@ function resolveExtendSource(row: any): { gcsUri?: string; bytes?: string; mime?
       return { bytes: inline.bytes, mime: inline.mime };
     }
     if (inputs.sourceVideoId) {
-      const src = getDb().query("SELECT video_url FROM library WHERE id=?").get(inputs.sourceVideoId) as { video_url: string } | null;
-      if (src?.video_url?.startsWith("gs://")) return { gcsUri: src.video_url };
+      const src = getDb()
+        .query("SELECT video_url, gcs_uri FROM library WHERE id=?")
+        .get(inputs.sourceVideoId) as { video_url: string; gcs_uri: string } | null;
+      const gcs = src?.gcs_uri?.startsWith("gs://")
+        ? src.gcs_uri
+        : src?.video_url?.startsWith("gs://")
+          ? src.video_url
+          : "";
+      if (gcs) return { gcsUri: gcs };
+      const mid = src?.video_url ? mediaIdFromUrl(src.video_url) : null;
+      if (mid) {
+        const file = getMedia(mid);
+        if (file) {
+          if (file.bytes > IMAGE_MAX_BYTES) return { diskTooBig: file.bytes };
+          const raw = await Bun.file(file.path).bytes();
+          return { bytes: raw.toBase64(), mime: file.mime };
+        }
+      }
     }
   } catch { /* fall through */ }
   return null;
@@ -255,7 +291,7 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
       db.query("UPDATE jobs SET progress=?, updated_at=? WHERE id=?").run(progress, nowIso(), jobId);
       if (op.done) {
         if (op.error) failJob(jobId, op.error);
-        else succeedJob(jobId, op.videoUris ?? []);
+        else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes);
         return;
       }
     } catch (e: any) {
@@ -265,33 +301,70 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
   failJob(jobId, "POLL_TIMEOUT: Vertex operation did not complete in time; poll GET /jobs/:id to retry later");
 }
 
-function succeedJob(jobId: string, videoUris: string[] = []) {
+async function succeedJob(
+  jobId: string,
+  videoUris: string[] = [],
+  inline?: { base64: string; mime: string },
+) {
   const db = getDb();
   const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
   if (!row) return;
   const now = nowIso();
   db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
+  const gs = videoUris.find((u) => u.startsWith("gs://")) ?? "";
+  const stored = await materializeOutput(row.project_id, gs, inline);
   const libId = Bun.randomUUIDv7();
-  const videoUrl = videoUris[0] ?? "";
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
-      duration_seconds, audio, status, cost_estimate, video_url, inputs_json, vertex_operation, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, inputs_json, vertex_operation, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     libId, row.project_id, jobId, row.mode, row.model, row.prompt, row.resolution, row.aspect,
-    row.duration_seconds, row.audio, "succeeded", row.cost_estimate, videoUrl, row.inputs_json,
+    row.duration_seconds, row.audio, "succeeded", row.cost_estimate, stored.url, gs, row.inputs_json,
     row.vertex_operation, now, now,
   );
-  log.info({ jobId, libId, videoUrl }, "job succeeded");
+  log.info({ jobId, libId, videoUrl: stored.url }, "job succeeded");
   fireWebhook(row.webhook_url, { jobId, status: "succeeded", libraryId: libId, videoUris });
 }
 
+/**
+ * Persist output bytes server-side so videos survive reloads, stay playable
+ * and can feed Extend. Prefers the GCS object; falls back to the inline
+ * payload. Never throws — archival must not fail a successful generation.
+ */
+async function materializeOutput(
+  projectId: string,
+  gsUri: string,
+  inline?: { base64: string; mime: string },
+): Promise<{ url: string }> {
+  try {
+    if (gsUri) {
+      const token = await resolveAuth(projectId).then((a) => a.getToken());
+      const { bytes, mime } = await downloadGcsUri(gsUri, token);
+      return { url: (await saveMedia(bytes, mime)).url };
+    }
+    if (inline) {
+      const raw = Uint8Array.fromBase64(inline.base64);
+      if (raw.length > 0 && raw.length <= MEDIA_MAX_BYTES) {
+        return { url: (await saveMedia(raw, inline.mime)).url };
+      }
+    }
+  } catch (e: any) {
+    log.error({ projectId, err: e?.message ?? String(e) }, "output archival skipped");
+  }
+  return { url: gsUri };
+}
+
 function failJob(jobId: string, error: string) {
-  const db = getDb();
-  const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
-  db.query("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(error, nowIso(), jobId);
-  log.error({ jobId, error }, "job failed");
-  if (row?.webhook_url) fireWebhook(row.webhook_url, { jobId, status: "failed", error });
+  try {
+    const db = getDb();
+    const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
+    db.query("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(error, nowIso(), jobId);
+    log.error({ jobId, error }, "job failed");
+    if (row?.webhook_url) fireWebhook(row.webhook_url, { jobId, status: "failed", error });
+  } catch (e) {
+    log.error({ jobId, error, err: String(e) }, "failJob bookkeeping failed");
+  }
 }
 
 function fireWebhook(url: string, payload: Record<string, unknown>) {
@@ -332,7 +405,7 @@ export async function cancelJob(jobId: string): Promise<
     try {
       const r = await d.cancel(row.vertex_operation);
       if (r.alreadyDone) {
-        succeedJob(jobId);
+        await succeedJob(jobId);
         return { ok: true, status: "already_done" };
       }
     } catch (e: any) {

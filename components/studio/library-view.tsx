@@ -7,7 +7,8 @@ import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "luci
 import { money } from "@/lib/format";
 import { ago, fullTs } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
-import { captureVideo, fileToBase64 } from "@/lib/media";
+import { captureVideo } from "@/lib/media";
+import { api } from "@/lib/api";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
@@ -53,21 +54,31 @@ export function LibraryView() {
 
   const onUpload = async (file: File) => {
     setBusy(true);
-    push("Importing video…", { icon: "↑" });
+    push("Uploading video…", { icon: "↑" });
     try {
-      const { url, thumb, meta } = await captureVideo(file);
-      const raw = await fileToBase64(file).catch(() => null);
+      // Thumb/meta locally, bytes to the server store — the library record
+      // then plays and extends from the server, surviving reloads.
+      const [{ thumb, meta }, uploaded] = await Promise.all([
+        captureVideo(file),
+        api.uploadMedia(file).catch((e) => {
+          push("Server upload failed — importing record only", {
+            icon: "!",
+            tone: "danger",
+            detail: String(e instanceof Error ? e.message : e).slice(0, 120),
+          });
+          return null;
+        }),
+      ]);
       const r = await importVideo({
         prompt: (file.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
         res: meta.res,
         aspect: meta.aspect,
         dur: meta.dur,
         thumbDataUrl: thumb,
-        blobUrl: url,
-        ...(raw ? { sourceBytes: raw.bytes, sourceMime: raw.mime } : {}),
+        ...(uploaded ? { mediaId: uploaded.id } : {}),
       });
       if (!r.ok) push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
-      else push("Video imported to Library", { icon: "✓" });
+      else push(uploaded ? "Video uploaded to Library" : "Video recorded in Library (no file stored)", { icon: "✓" });
     } catch {
       push("Could not read that video", { icon: "!", tone: "danger" });
     } finally {

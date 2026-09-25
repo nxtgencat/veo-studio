@@ -85,17 +85,15 @@ export function saveSettings(
 }
 
 function b64url(data: Uint8Array): string {
-  let s = "";
-  for (const b of data) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return data
+    .toBase64()
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 function pemToDer(pem: string): Uint8Array {
-  const b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  return Uint8Array.fromBase64(pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, ""));
 }
 
 export async function signAssertion(sa: SaCreds, scope = CLOUD_SCOPE): Promise<string> {

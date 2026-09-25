@@ -8,6 +8,8 @@
 // NOT include — so metadata GET is only a best-effort extra for display.
 
 import { childLogger } from "./logger.ts";
+import { MEDIA_MAX_BYTES } from "./media-store.ts";
+import { readCapped } from "./images.ts";
 
 const log = childLogger({ module: "gcs" });
 
@@ -67,4 +69,33 @@ export async function checkBucket(bucket: string, token: string): Promise<Bucket
   const check = { bucket, location, granted, canWrite: granted.includes("storage.objects.create") };
   log.info(check, "bucket reachable");
   return check;
+}
+
+export function parseGsUri(uri: string): { bucket: string; object: string } | null {
+  const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(uri.trim());
+  if (!m?.[1] || !m?.[2]) return null;
+  return { bucket: m[1], object: m[2] };
+}
+
+/** Download a gs:// object with a Bearer token (capped — never OOM the server). */
+export async function downloadGcsUri(gsUri: string, token: string): Promise<{ bytes: Uint8Array; mime: string }> {
+  const parsed = parseGsUri(gsUri);
+  if (!parsed) throw Object.assign(new Error(`Not a gs:// URI: ${gsUri}`), { code: "E_GCS_BAD_URI" });
+  const url =
+    `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(parsed.bucket)}` +
+    `/o/${encodeURIComponent(parsed.object)}?alt=media`;
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  } catch (e) {
+    throw Object.assign(new Error(`GCS download unreachable: ${String(e)}`), { code: "E_GCS_DOWNLOAD" });
+  }
+  if (!res.ok) {
+    throw Object.assign(new Error(`GCS download failed (${res.status}) for ${gsUri}`), {
+      code: "E_GCS_DOWNLOAD",
+      status: res.status,
+    });
+  }
+  const bytes = await readCapped(res, MEDIA_MAX_BYTES);
+  return { bytes, mime: res.headers.get("content-type")?.split(";")[0]?.trim() || "video/mp4" };
 }

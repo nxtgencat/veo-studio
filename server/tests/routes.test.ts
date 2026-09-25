@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.env.SQLITE_FILE = ":memory:";
 process.env.JOB_POLL_MS = "5";
 process.env.JOB_POLL_ATTEMPTS = "10";
+process.env.MEDIA_DIR = join(tmpdir(), `veo-media-test-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { app } from "../src/routes.ts";
@@ -78,6 +81,45 @@ describe("routes", () => {
     expect(r.status).toBe(422);
     const json = (await r.json()) as { error: { code: string } };
     expect(json.error.code).toBe("E_IMAGE_TYPE");
+  });
+
+  test("media upload, serve, range, and cleanup on delete", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const fd = new FormData();
+    fd.append("file", new File([bytes.buffer as ArrayBuffer], "clip.mp4", { type: "video/mp4" }));
+    const up = await app.request("/media/upload", { method: "POST", body: fd });
+    expect(up.status).toBe(201);
+    const saved = (await up.json()) as { id: string; url: string };
+    expect(saved.url).toBe(`/media/${saved.id}`);
+
+    const full = await app.request(saved.url);
+    expect(full.status).toBe(200);
+    expect(new Uint8Array(await full.arrayBuffer())).toEqual(bytes);
+
+    const part = await app.request(saved.url, { headers: { Range: "bytes=0-3" } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-range")).toBe(`bytes 0-3/${bytes.length}`);
+    expect(new Uint8Array(await part.arrayBuffer())).toEqual(bytes.slice(0, 4));
+
+    const imp = await app.request("/library/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "prj_routes", prompt: "with file", mediaId: saved.id }),
+    });
+    expect(imp.status).toBe(201);
+    const { id } = (await imp.json()) as { id: string };
+    const row = (await (await app.request(`/library/${id}`)).json()) as { video_url: string };
+    expect(row.video_url).toBe(`/media/${saved.id}`);
+
+    expect((await app.request(`/library/${id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await app.request(saved.url)).status).toBe(404);
+  });
+
+  test("media upload rejects non-video/image", async () => {
+    const fd = new FormData();
+    fd.append("file", new File(["hi"], "a.txt", { type: "text/plain" }));
+    const up = await app.request("/media/upload", { method: "POST", body: fd });
+    expect(up.status).toBe(415);
   });
 
   test("GET /jobs lists created jobs", async () => {

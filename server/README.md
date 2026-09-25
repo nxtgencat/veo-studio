@@ -38,10 +38,11 @@ GOOGLE_CLOUD_PROJECT=… VERTEX_ACCESS_TOKEN=… VERTEXAI_LOCATION=us-central1
 - CRUD: `/projects`, `/projects/:id/elements` (`characters|locations|assets|frames`).
 - `GET/PATCH /projects/:id/settings` — service-account JSON (write-only),
   bucket, `useBucket` toggle, `authMode` (`service_account` default | `env`).
-  Reads never include the key. Writes are **verified live before saving**:
-  a fresh key must mint a token, and a bucket ID must exist and be reachable
-  (404/403 map to `E_BUCKET_NOT_FOUND`/`E_BUCKET_FORBIDDEN`) — only valid,
-  reachable config persists.
+  Reads never include the key. Writes are **verified live before saving**
+  (fresh keys must mint a token; buckets must exist and grant at least
+  object read — Storage Object User suffices).
+- `POST /media/upload` (multipart `file`, 200 MB cap) + `GET /media/:id`
+  (Range-capable) — the server file store behind uploads and archived outputs.
 
 ## Rules enforced (see `src/validation.ts`)
 

@@ -9,7 +9,8 @@ import {
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
 import { ago, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
-import { captureAt, captureVideo, fileToBase64, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
+import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
+import { api } from "@/lib/api";
 import { ytConnect, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
@@ -185,16 +186,15 @@ function VideoPickerDialog({ close }: { close: () => void }) {
         onFile={(f) => {
           setBusy(true);
           captureVideo(f)
-            .then(async ({ url, thumb, meta }) => {
-              const raw = await fileToBase64(f).catch(() => null);
+            .then(async ({ thumb, meta }) => {
+              const uploaded = await api.uploadMedia(f).catch(() => null);
               const r = await importVideo({
                 prompt: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
                 res: meta.res,
                 aspect: meta.aspect,
                 dur: meta.dur,
                 thumbDataUrl: thumb,
-                blobUrl: url,
-                ...(raw ? { sourceBytes: raw.bytes, sourceMime: raw.mime } : {}),
+                ...(uploaded ? { mediaId: uploaded.id } : {}),
               });
               if (!r.ok || !r.id) {
                 push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
@@ -206,9 +206,11 @@ function VideoPickerDialog({ close }: { close: () => void }) {
               push(
                 meta.dur > 30
                   ? `Imported — but ${meta.dur}s is too long to extend (≤30s)`
-                  : tooBig
-                    ? "Imported and selected — file is over 20MB, extend needs a GCS source for it"
-                    : "Imported and selected as extend source",
+                  : !uploaded
+                    ? "Imported as record only (file not stored) — extend needs the file"
+                    : tooBig
+                      ? "Imported and selected — file is over 20MB, extend needs a GCS source for it"
+                      : "Imported and selected as extend source",
                 { icon: "✓" },
               );
             })
@@ -336,7 +338,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
 
   const grab = (which: string, t: number | null) => {
     if (!v.url) {
-      push("File is gone after reload — re-upload it to play or grab frames.", { icon: "!", tone: "danger" });
+      push("No playable file stored for this video.", { icon: "!", tone: "danger" });
       return;
     }
     push(`Grabbing ${which.toLowerCase()}…`, { icon: "…" });
@@ -419,8 +421,8 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         </div>
       ) : v.status === "success" ? (
         <div className="rounded-[10px] border slate-hair p-4 text-[12.5px] leading-relaxed" style={{ background: "var(--t-pending-bg)", color: "var(--t-pending-fg)" }}>
-          <p className="font-bold mb-1">File kept as thumbnail only.</p>
-          <p>Browsers can&apos;t persist video files — re-upload it to play or extend.</p>
+          <p className="font-bold mb-1">No playable file stored.</p>
+          <p>This record kept metadata only — {v.model === "import" ? "the upload did not reach the server" : "the output was not archived"}. Re-upload or regenerate to play or extend.</p>
         </div>
       ) : v.status === "pending" ? (
         <div className="rounded-[10px] border slate-hair p-5 text-center">

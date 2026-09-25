@@ -72,6 +72,7 @@ export function migrate(d: Database) {
       cost_estimate REAL NOT NULL DEFAULT 0,
       video_url TEXT NOT NULL DEFAULT '',
       thumb_url TEXT NOT NULL DEFAULT '',
+      gcs_uri TEXT NOT NULL DEFAULT '',
       inputs_json TEXT NOT NULL DEFAULT '{}',
       vertex_operation TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
@@ -86,7 +87,19 @@ export function migrate(d: Database) {
       auth_mode TEXT NOT NULL DEFAULT 'service_account',
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      mime TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
+  // Column added after launch — backfill existing databases.
+  const cols = d.query("PRAGMA table_info(library)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "gcs_uri")) {
+    d.exec("ALTER TABLE library ADD COLUMN gcs_uri TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 export function resetDbForTests() {

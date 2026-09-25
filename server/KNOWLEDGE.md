@@ -83,6 +83,25 @@ sites is a crop, not native).
   the same `extend` task — we disable Extend for Veo 2).
 - Aspect 16:9/9:16. 24fps.
 
+## 3c. Server media store (what persists where)
+
+- **Elements/images:** inline data-URL uploads persist in sqlite (≤20 MB
+  JPEG/PNG); remote URLs stay URLs and are fetched (capped, sniffed) at
+  submit time.
+- **Videos:** `data/media/` file store (`media` table index) + `POST
+  /media/upload` (multipart, 200 MB cap, video/image only) and
+  `GET /media/:id` with Range support. Deleting a library row deletes its
+  hosted file; GCS objects are left alone.
+- **Generations:** on success the server archives output bytes — GCS object
+  download preferred, inline LRO payload as fallback — into the media store.
+  `library.video_url` is the playable `/media/…` URL; `gcs_uri` keeps the
+  chainable URI. Archival never fails the job (falls back to URI/empty).
+- **Uploads:** web uploads the file first, then imports with `mediaId` —
+  playable and extendable across reloads.
+- **Extend resolution order:** explicit `sourceVideoGcsUri` → chained
+  `gcs_uri` → on-disk `/media` bytes (≤20 MB inline) → request inline
+  `sourceVideoBytes` → clear `EXTEND_NEEDS_SOURCE` / `EXTEND_SOURCE_TOO_BIG`.
+
 ## 3b. Image-input limits (all slots)
 
 Counts per request — slots are mutually exclusive (one slot only, enforced

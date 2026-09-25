@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { api } from "@/lib/api";
+import { api, apiBase } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
 import { imageDims } from "@/lib/media";
@@ -93,7 +93,6 @@ function toVideoItem(
   v: ServerVideo,
   elements: ServerElement[],
   youtube: Record<string, NonNullable<VideoItem["youtube"]>>,
-  blobUrls: Record<string, string>,
 ): VideoItem {
   let inputs: VideoItem["inputs"] = {};
   try {
@@ -128,7 +127,13 @@ function toVideoItem(
     cost: v.cost_estimate ?? 0,
     createdAt: Date.parse(v.created_at) || Date.now(),
     thumb: v.thumb_url || "",
-    url: blobUrls[v.id] ?? (v.video_url || ""),
+    // Playable only when the server hosts the bytes (/media/…) or the URL is
+    // direct http(s). gs:// URIs and empty strings are not browser-playable.
+    url: v.video_url.startsWith("/media/")
+      ? `${apiBase()}${v.video_url}`
+      : v.video_url.startsWith("http")
+        ? v.video_url
+        : "",
     imported: v.model === "import" ? true : undefined,
     error: "",
     inputs,
@@ -194,7 +199,7 @@ interface StudioState {
   activeProject: () => Project | undefined;
   updateActive: (fn: (draft: Project) => void) => { ok: boolean; error?: string };
   queueGeneration: () => Promise<{ ok: boolean; error?: string; count?: number }>;
-  importVideo: (a: { prompt: string; res: string; aspect: string; dur: number; thumbDataUrl: string; blobUrl: string; sourceBytes?: string; sourceMime?: string }) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  importVideo: (a: { prompt: string; res: string; aspect: string; dur: number; thumbDataUrl: string; mediaId?: string }) => Promise<{ ok: boolean; error?: string; id?: string }>;
   deleteVideo: (id: string) => Promise<void>;
   createProject: (name: string) => Promise<string>;
   renameProject: (id: string, name: string) => Promise<void>;
@@ -214,14 +219,13 @@ function buildProjects(
   jobs: ServerJob[],
   srvSettings: Record<string, ServerSettings>,
   local: LocalOverlays,
-  blobUrls: Record<string, string>,
 ): Project[] {
   return srv.map((p) => {
     const els = elements.filter((e) => e.project_id === p.id);
     const libs = library.filter((v) => v.project_id === p.id);
     const pjobs = jobs.filter((j) => j.projectId === p.id);
     const items: VideoItem[] = [
-      ...libs.map((v) => toVideoItem(v, els, local.youtube, blobUrls)),
+      ...libs.map((v) => toVideoItem(v, els, local.youtube)),
       ...pjobs
         .filter((j) => j.status === "queued" || j.status === "running" || j.status === "failed" || j.status === "cancelled")
         .map((j) => jobToVideoItem(j, els, "")),
@@ -259,10 +263,6 @@ function buildProjects(
 
 export const useStudio = create<StudioState>()((set, get) => {
   let local = loadLocal();
-  let blobUrls: Record<string, string> = {};
-  // Raw upload bytes for direct (non-GCS) extend, keyed by library id.
-  // Session-only and capped at 20 MB — GCS chaining stays the default.
-  let uploadBytes: Record<string, { bytes: string; mime: string }> = {};
   const loaded = new Set<string>();
   // In-flight hydrate promise: never run two hydrates concurrently
   // (StrictMode double-effects / retries would each auto-create projects).
@@ -272,7 +272,7 @@ export const useStudio = create<StudioState>()((set, get) => {
 
   const rebuild = (patch: Partial<StudioState>) => {
     const s = get();
-    const projects = buildProjects(s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local, blobUrls);
+    const projects = buildProjects(s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local);
     set({ ...patch, projects });
   };
 
@@ -502,13 +502,8 @@ export const useStudio = create<StudioState>()((set, get) => {
             base.sourceAspect = s.aspect;
             base.sourceDurationSeconds = s.dur;
           }
-          // Direct path: uploaded file bytes go inline (SDK-legal, ≤20 MB).
-          // GCS-chained sources skip this via resolveExtendSource server-side.
-          const up = uploadBytes[g.extendVideo];
-          if (up) {
-            base.sourceVideoBytes = up.bytes;
-            base.sourceVideoMimeType = up.mime;
-          }
+          // Uploaded/generated files live on the server now — it resolves
+          // gs:// chains and on-disk bytes itself. No raw bytes in the request.
         }
         let count = 0;
         for (let i = 0; i < (g.batch || 1); i++) {
@@ -534,9 +529,8 @@ export const useStudio = create<StudioState>()((set, get) => {
           durationSeconds: a.dur,
           audio: true,
           thumbDataUrl: a.thumbDataUrl,
+          ...(a.mediaId ? { mediaId: a.mediaId } : {}),
         });
-        if (a.blobUrl) blobUrls[id] = a.blobUrl;
-        if (a.sourceBytes) uploadBytes[id] = { bytes: a.sourceBytes, mime: a.sourceMime ?? "video/mp4" };
         await get().refreshActive();
         return { ok: true, id };
       } catch (e) {
@@ -559,8 +553,6 @@ export const useStudio = create<StudioState>()((set, get) => {
           // Already terminal/gone — refresh anyway.
         }
       }
-      delete blobUrls[id];
-      delete uploadBytes[id];
       await get().refreshActive();
     },
 

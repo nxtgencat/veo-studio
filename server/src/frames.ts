@@ -7,6 +7,9 @@
 // deps); otherwise `thumbnailStatus` explains why `thumbnails` is empty.
 
 import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, VideoSample, VideoSampleSink } from "mediabunny";
+// NOTE: PNG IDAT needs zlib-wrapped deflate. Bun.deflateSync emits raw
+// deflate (verified: node inflateSync rejects it, even with windowBits),
+// so node:zlib stays here deliberately — correctness over API purity.
 import { deflateSync } from "node:zlib";
 
 export type ExtractOptions = {
@@ -31,24 +34,9 @@ export type ExtractResult = {
   thumbnailStatus: "ok" | "decoder-unavailable-in-this-runtime" | "no-samples";
 };
 
-const crcTable = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
-  }
-  return t;
-})();
-
 function crc32(buf: Uint8Array): number {
-  let c = -1;
-  for (let i = 0; i < buf.length; i++) {
-    const b = buf[i] ?? 0;
-    const t = crcTable[(c ^ b) & 0xff] ?? 0;
-    c = t ^ (c >>> 8);
-  }
-  return (c ^ -1) >>> 0;
+  // Standard ISO-HDLC CRC32 (verified: Bun.hash.crc32("123456789") === 0xcbf43926).
+  return Bun.hash.crc32(buf);
 }
 
 function chunk(type: string, data: Uint8Array): Uint8Array {
@@ -143,7 +131,7 @@ export async function extractFrames(
           const png = encodePngRgba(rgba, w, h);
           thumbnails.push({
             timestamp: sample.timestamp,
-            pngBase64: Buffer.from(png).toString("base64"),
+            pngBase64: png.toBase64(),
             width: w,
             height: h,
           });
