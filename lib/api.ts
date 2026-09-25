@@ -97,7 +97,7 @@ export const api = {
   listElements: (projectId: string) =>
     req<{ elements: ServerElement[] }>(`/projects/${projectId}/elements`),
   createElement: (projectId: string, body: { category: string; name: string; imageUrl: string; note: string }) =>
-    req<ServerElement & { projectId: string }>(`/projects/${projectId}/elements`, { method: "POST", body: JSON.stringify(body) }),
+    req<{ id: string; projectId: string; category: string; name: string; imageUrl: string; note: string; createdAt: string }>(`/projects/${projectId}/elements`, { method: "POST", body: JSON.stringify(body) }),
   deleteElement: (id: string) => req<{ deleted: boolean }>(`/elements/${id}`, { method: "DELETE" }),
 
   createJob: (body: Record<string, unknown>, idempotencyKey: string) =>

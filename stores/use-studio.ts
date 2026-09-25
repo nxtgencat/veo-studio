@@ -264,6 +264,9 @@ export const useStudio = create<StudioState>()((set, get) => {
   // Session-only and capped at 20 MB — GCS chaining stays the default.
   let uploadBytes: Record<string, { bytes: string; mime: string }> = {};
   const loaded = new Set<string>();
+  // In-flight hydrate promise: never run two hydrates concurrently
+  // (StrictMode double-effects / retries would each auto-create projects).
+  let hydrating: Promise<void> | null = null;
 
   const persist = () => saveLocal(local);
 
@@ -299,6 +302,32 @@ export const useStudio = create<StudioState>()((set, get) => {
     rebuild({});
   }
 
+  async function doHydrate() {
+    local = loadLocal();
+    try {
+      const [caps, projs] = await Promise.all([api.capabilities(), api.listProjects()]);
+      setCapabilities(caps);
+      const srv: SrvProject[] = projs.projects.map((p) => ({
+        id: p.id,
+        name: p.name,
+        createdAt: Date.parse(p.created_at) || Date.now(),
+      }));
+      set({ caps, capsReady: true, srvProjects: srv, serverUp: true, lastError: "" });
+      // Never auto-create: an empty server means the empty state (Home offers
+      // "Create project"). Auto-creating here raced under concurrent hydrates
+      // and littered untitled projects.
+      if (!local.activeId || !srv.some((p) => p.id === local.activeId)) {
+        local.activeId = srv[0]?.id ?? null;
+      }
+      persist();
+      set({ activeId: local.activeId });
+      if (local.activeId) await fetchScope(local.activeId).catch(() => {});
+      rebuild({ hydrated: true });
+    } catch (e) {
+      set({ hydrated: true, serverUp: false, lastError: errOf(e) });
+    }
+  }
+
   return {
     srvProjects: [],
     srvSettings: {},
@@ -314,33 +343,15 @@ export const useStudio = create<StudioState>()((set, get) => {
     hydrated: false,
     refreshing: false,
 
-    hydrate: async () => {
-      if (get().hydrated) return;
-      local = loadLocal();
-      try {
-        const [caps, projs] = await Promise.all([api.capabilities(), api.listProjects()]);
-        setCapabilities(caps);
-        const srv: SrvProject[] = projs.projects.map((p) => ({
-          id: p.id,
-          name: p.name,
-          createdAt: Date.parse(p.created_at) || Date.now(),
-        }));
-        set({ caps, capsReady: true, srvProjects: srv, serverUp: true, lastError: "" });
-        if (!srv.length) {
-          const created = await api.createProject("Untitled project");
-          const one: SrvProject = { id: created.id, name: created.name, createdAt: Date.parse(created.created_at) || Date.now() };
-          set({ srvProjects: [one] });
-          local.activeId = one.id;
-        } else if (!local.activeId || !srv.some((p) => p.id === local.activeId)) {
-          local.activeId = srv[0]?.id ?? null;
-        }
-        persist();
-        set({ activeId: local.activeId });
-        if (local.activeId) await fetchScope(local.activeId).catch(() => {});
-        rebuild({ hydrated: true });
-      } catch (e) {
-        set({ hydrated: true, serverUp: false, lastError: errOf(e) });
-      }
+    hydrate: () => {
+      if (get().hydrated) return Promise.resolve();
+      if (hydrating) return hydrating;
+      hydrating = (async () => {
+        await doHydrate();
+      })().finally(() => {
+        hydrating = null;
+      });
+      return hydrating;
     },
 
     retry: async () => {
@@ -442,7 +453,16 @@ export const useStudio = create<StudioState>()((set, get) => {
           imageUrl: img,
           note: "Saved from generator",
         });
-        set({ elements: [...get().elements, created] });
+        const row: ServerElement = {
+          id: created.id,
+          project_id: created.projectId ?? p.id,
+          category: created.category,
+          name: created.name,
+          image_url: created.imageUrl,
+          note: created.note,
+          created_at: created.createdAt,
+        };
+        set({ elements: [...get().elements, row] });
         rebuild({});
         return created.id;
       };
@@ -617,7 +637,17 @@ export const useStudio = create<StudioState>()((set, get) => {
           imageUrl: data.imageUrl,
           note: data.note,
         });
-        set({ elements: [created, ...get().elements] });
+        // POST returns camelCase; normalize to the snake_case row shape.
+        const row: ServerElement = {
+          id: created.id,
+          project_id: created.projectId ?? p.id,
+          category: created.category,
+          name: created.name,
+          image_url: created.imageUrl,
+          note: created.note,
+          created_at: created.createdAt,
+        };
+        set({ elements: [row, ...get().elements] });
         rebuild({});
         return { ok: true };
       } catch (e) {

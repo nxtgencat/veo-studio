@@ -24,7 +24,7 @@ export function LibraryView() {
   const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
   const importVideo = useStudio((s) => s.importVideo);
   const push = useToasts((s) => s.push);
-  const { state, set, clear } = useQueryState({ status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all" });
+  const { state, set, clear } = useQueryState({ status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all", source: "all" });
   const [busy, setBusy] = useState(false);
 
   const models = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.model))], [project?.library]);
@@ -36,14 +36,20 @@ export function LibraryView() {
   const mLabel = (id: string) => (id === "import" ? "Upload" : modelOf(id).label);
   const list = project.library.filter(
     (v) =>
-      (state.status === "all" ? true : v.status === state.status) &&
-      (state.model === "all" ? true : v.model === state.model) &&
-      (state.res === "all" ? true : v.res === state.res) &&
-      (state.aspect === "all" ? true : v.aspect === state.aspect) &&
-      (state.dur === "all" ? true : String(v.dur) === state.dur) &&
-      (state.audio === "all" ? true : state.audio === "on" ? !!v.audio : !v.audio),
+      (state.source === "all" ? true : state.source === "uploaded" ? !!v.imported : !v.imported) &&
+      // Model/config facets live on the Generated tab only.
+      (state.source !== "generated" ? true : (
+        (state.status === "all" ? true : v.status === state.status) &&
+        (state.model === "all" ? true : v.model === state.model) &&
+        (state.res === "all" ? true : v.res === state.res) &&
+        (state.aspect === "all" ? true : v.aspect === state.aspect) &&
+        (state.dur === "all" ? true : String(v.dur) === state.dur) &&
+        (state.audio === "all" ? true : state.audio === "on" ? !!v.audio : !v.audio)
+      )),
   );
-  const nActive = [state.model, state.res, state.aspect, state.dur, state.audio].filter((x) => x !== "all").length;
+  const nActive = state.source === "generated"
+    ? [state.status, state.model, state.res, state.aspect, state.dur, state.audio].filter((x) => x !== "all").length
+    : 0;
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -69,7 +75,7 @@ export function LibraryView() {
     }
   };
 
-  const facet = (label: string, raw: string, disp: string, key: "model" | "res" | "aspect" | "dur" | "audio", opts: [string, string][]) => (
+  const facet = (label: string, raw: string, disp: string, key: "model" | "res" | "aspect" | "dur" | "audio" | "status", opts: [string, string][]) => (
     <SlateDropdown
       key={label}
       label={`${label}: ${disp}`}
@@ -111,15 +117,20 @@ export function LibraryView() {
       />
 
       <SlateSegmented
-        label="Filter by status"
-        className="mb-4 capitalize"
-        options={(["all", "pending", "success", "failed"] as const).map((k) => ({ id: k, label: k }))}
-        value={state.status as "all" | "pending" | "success" | "failed"}
-        onChange={(v) => set({ status: v })}
+        label="Library section"
+        className="mb-4"
+        options={([
+          ["all", `All`],
+          ["generated", `Generated`],
+          ["uploaded", `Uploaded`],
+        ] as const).map(([id, label]) => ({ id, label }))}
+        value={state.source as "all" | "generated" | "uploaded"}
+        onChange={(v) => set({ source: v, status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all" })}
       />
 
-      {project.library.length > 0 && (
+      {project.library.length > 0 && state.source === "generated" && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
+          {facet("Status", state.status, state.status === "all" ? "All" : state.status[0]?.toUpperCase() + state.status.slice(1), "status", [["pending", "Pending"], ["success", "Success"], ["failed", "Failed"]])}
           {facet("Model", state.model, state.model === "all" ? "All" : mLabel(state.model), "model", models.map((id) => [id, mLabel(id)] as [string, string]))}
           {facet("Res", state.res, state.res === "all" ? "All" : state.res, "res", reses.map((r) => [r, r] as [string, string]))}
           {facet("Aspect", state.aspect, state.aspect === "all" ? "All" : state.aspect, "aspect", aspects.map((a) => [a, a] as [string, string]))}
@@ -169,7 +180,7 @@ export function LibraryView() {
           {list.map((v) => (
             <Link
               key={v.id}
-              href={`/p/${projectId}/library?status=${state.status}&video=${v.id}`}
+              href={`/p/${projectId}/library?status=${state.status}&source=${state.source}&video=${v.id}`}
               className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
             >
               <div className="relative aspect-video bg-surface2">

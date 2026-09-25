@@ -166,7 +166,7 @@ function ElementModal({
               className="font-mono !text-[12px]"
               value={url}
               onChange={(e) => { setUrl(e.target.value); setUp(null); }}
-              placeholder="https://… (blank = auto artwork)"
+              placeholder="https://… or upload a file"
             />
             <label className="slate-btn slate-btn-ghost slate-btn-sm shrink-0 cursor-pointer">
               <Upload className="size-3.5" /> File
@@ -177,6 +177,9 @@ function ElementModal({
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (!f) return;
+                  if (!name.trim()) {
+                    setName((f.name || "").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Upload");
+                  }
                   fileToImage(f).then(setUp).catch(() => push("Could not read that image", { icon: "!", tone: "danger" }));
                   e.target.value = "";
                 }}
