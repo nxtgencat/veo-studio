@@ -1,17 +1,14 @@
 import type { NextConfig } from "next";
 
-// Same-origin /api/* proxy (dev): the browser calls this app's origin and Next
-// forwards to the backend, so the httpOnly session cookie flows with no CORS.
-// Destination is env-only (never request-derived). No rewrite when both unset
-// (prod: the gateway owns /api/*).
-const apiBase = process.env.NEXT_PUBLIC_API_PROXY || process.env.NEXT_PUBLIC_API_BASE;
+// Browser calls same-origin /api/*; Next forwards to the backend (/api stripped).
+const apiTarget = process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8787";
 
 const nextConfig: NextConfig = {
+  // Required for Docker: emits `.next/standalone` (minimal server + traced deps).
+  // See https://nextjs.org/docs/app/api-reference/config/next-config-js/output
+  output: "standalone",
   async rewrites() {
-    if (apiBase === undefined || apiBase === "") {
-      return [];
-    }
-    return [{ source: "/api/:path*", destination: `${apiBase}/api/:path*` }];
+    return [{ source: "/api/:path*", destination: `${apiTarget}/:path*` }];
   },
 };
 

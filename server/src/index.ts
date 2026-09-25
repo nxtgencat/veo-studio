@@ -4,6 +4,8 @@ import { recoverInterrupted } from "./jobs.ts";
 import { logger } from "./logger.ts";
 
 const port = Number(process.env.PORT ?? 8787);
+// Loopback by default (reached via the Next /api proxy); API_HOST overrides.
+const hostname = process.env.API_HOST ?? "127.0.0.1";
 
 // Ensure DB migrates at boot, then resume jobs killed by a previous crash.
 getDb();
@@ -18,7 +20,8 @@ try {
 
 export default {
   port,
+  hostname,
   fetch: app.fetch,
 };
 
-logger.info({ port }, "veo headless server listening");
+logger.info({ port, hostname }, "veo headless server listening");

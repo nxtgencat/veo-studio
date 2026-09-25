@@ -1,7 +1,10 @@
 // Typed client for the headless veo server. No mocks — every call hits HTTP.
-// Base URL: NEXT_PUBLIC_API_URL (default http://localhost:8787 for `bun run dev`).
+// Defaults to same-origin /api (proxied to the backend); set
+// NEXT_PUBLIC_API_URL to call a backend origin directly instead.
 
-const BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787").replace(/\/$/, "");
+const REMOTE = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+const apiPrefix = (path: string) => (REMOTE !== "" ? `${REMOTE}${path}` : `/api${path}`);
+const apiOrigin = REMOTE === "" ? "same-origin /api" : REMOTE;
 
 export class ApiError extends Error {
   code: string;
@@ -18,7 +21,7 @@ export class ApiError extends Error {
 async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, {
+    res = await fetch(`${apiPrefix(path)}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -27,7 +30,7 @@ async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string)
       },
     });
   } catch (e) {
-    throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+    throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
   }
   const json = (await res.json().catch(() => ({}))) as {
     error?: { code?: string; message?: string; details?: unknown };
@@ -125,9 +128,9 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${BASE}/media/upload`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/media/upload")}`, { method: "POST", body: fd });
     } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
     const json = (await res.json().catch(() => ({}))) as {
       error?: { code?: string; message?: string };
@@ -150,9 +153,9 @@ export const api = {
     }).toString();
     let res: Response;
     try {
-      res = await fetch(`${BASE}/backup?${q}`);
+      res = await fetch(`${apiPrefix(`/backup?${q}`)}`);
     } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
     if (!res.ok) {
       const json = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
@@ -168,9 +171,9 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${BASE}/restore`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/restore")}`, { method: "POST", body: fd });
     } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
     const json = (await res.json().catch(() => ({}))) as {
       error?: { code?: string; message?: string };
@@ -190,9 +193,9 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${BASE}/restore/inspect`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/restore/inspect")}`, { method: "POST", body: fd });
     } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
     const json = (await res.json().catch(() => ({}))) as {
       error?: { code?: string; message?: string };
@@ -207,5 +210,5 @@ export const api = {
 };
 
 export function apiBase(): string {
-  return BASE;
+  return REMOTE === "" ? "/api" : REMOTE;
 }
