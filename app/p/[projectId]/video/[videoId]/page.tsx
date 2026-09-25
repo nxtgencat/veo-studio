@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { fullTs, money } from "@/lib/format";
+import { authedMediaUrl } from "@/lib/api";
 import { modelOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { StudioShell } from "@/components/studio/studio-shell";
@@ -41,7 +42,7 @@ export default function VideoDeepLinkPage() {
         </div>
         {v.url ? (
           // eslint-disable-next-line jsx-a11y/media-has-caption
-          <video className="w-full rounded-[10px] bg-black" controls playsInline poster={v.thumb || ""} src={v.url} />
+          <video className="w-full rounded-[10px] bg-black" controls playsInline poster={v.thumb || ""} src={authedMediaUrl(v.url)} />
         ) : v.thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={v.thumb} className="w-full rounded-[10px] object-cover" alt="" />

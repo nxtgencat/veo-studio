@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
-import { isAuthorized, passwordRequired } from "./access.ts";
+import { isAuthorized, isAuthorizedMedia, passwordRequired } from "./access.ts";
 import { getDb, nowIso } from "./db.ts";
 import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
@@ -49,6 +49,15 @@ const PUBLIC_PATHS = new Set(["/health", "/auth/status"]);
 
 app.use("*", async (c, next) => {
   if (PUBLIC_PATHS.has(new URL(c.req.url).pathname)) return next();
+  // Browser media tags (<video src>) can't send Authorization headers —
+  // allow ?token= as a fallback for media playback only (Range-safe).
+  if (c.req.method === "GET" && new URL(c.req.url).pathname.startsWith("/media/")) {
+    const q = new URL(c.req.url).searchParams.get("token") ?? "";
+    if (!isAuthorizedMedia(c.req.header("authorization"), q)) {
+      return c.json({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required (set VEO_PASSWORD)" } }, 401);
+    }
+    return next();
+  }
   if (!isAuthorized(c.req.header("authorization"))) {
     return c.json({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required (set VEO_PASSWORD)" } }, 401);
   }

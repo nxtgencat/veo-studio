@@ -61,6 +61,22 @@ export function setAuthToken(t: string | null) {
   writeStoredToken(t);
 }
 
+/**
+ * Browser media tags (<video src>, canvas capture) can't send Authorization
+ * headers, so the server accepts ?token= on GET /media/:id. Append the stored
+ * password here at render time (never baked into the store) so playback,
+ * thumbnails and Range seeks stay authorized while the password gate is on.
+ * No token / non-media URLs pass through untouched.
+ */
+export function authedMediaUrl(url: string): string {
+  if (!url || !url.includes("/media/")) return url;
+  const t = getAuthToken();
+  if (!t) return url;
+  if (url.includes("token=")) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(t)}`;
+}
+
 let unauthorizedHandler: (() => void) | null = null;
 export function onUnauthorized(fn: (() => void) | null) {
   unauthorizedHandler = fn;

@@ -10,7 +10,7 @@ import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
 import { ago, fmtCountdown, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
-import { api } from "@/lib/api";
+import { api, authedMediaUrl } from "@/lib/api";
 import { ytConnect, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
@@ -348,7 +348,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       return;
     }
     push(`Grabbing ${which.toLowerCase()}…`, { icon: "…" });
-    captureAt(v.url, t)
+    captureAt(authedMediaUrl(v.url), t)
       .then(async (img) => {
         const r = await addElement("frames", {
           name: `${which} · ${(v.prompt || "video").slice(0, 28)}`,
@@ -459,7 +459,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       {v.status === "success" && v.url ? (
         <div className="rounded-[10px] border slate-hair bg-black overflow-hidden grid place-items-center">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <video className="max-h-[46dvh] max-w-full mx-auto" controls playsInline poster={v.thumb || ""} src={v.url} />
+          <video className="max-h-[46dvh] max-w-full mx-auto" controls playsInline poster={v.thumb || ""} src={authedMediaUrl(v.url)} />
         </div>
       ) : v.status === "success" ? (
         <div className="rounded-[10px] border slate-hair p-4 text-[12.5px] leading-relaxed" style={{ background: "var(--t-pending-bg)", color: "var(--t-pending-fg)" }}>
@@ -724,7 +724,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
         useYtAuth.getState().setAuth(c.token, c.exp, channel);
         tok = c.token;
       }
-      const res = await fetch(v.url);
+      const res = await fetch(authedMediaUrl(v.url));
       if (!res.ok) throw new Error(`Fetch failed (${res.status}) — re-upload the file.`);
       const blob = await res.blob();
       if (!blob.size) throw new Error("Empty file — re-upload it.");

@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { api, apiBase, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
+import { api, apiBase, authedMediaUrl, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
 import { imageDims } from "@/lib/media";
@@ -332,19 +332,21 @@ export const useStudio = create<StudioState>()((set, get) => {
 
   // Capture real thumbnails for succeeded videos missing them. Browser-only
   // (canvas) by necessity — Bun has no video decoder. Guarded + capped.
+  // Any playable url counts: local /api/media/… as well as direct http(s).
+  // gs://-only rows map to url="" and are skipped (nothing playable to grab).
   let backfilling = false;
   async function backfillThumbs(projectId: string) {
     if (backfilling) return;
     backfilling = true;
     try {
       const items = (get().projects.find((p) => p.id === projectId)?.library ?? [])
-        .filter((v) => v.status === "success" && !v.thumb && v.url.startsWith("http"))
+        .filter((v) => v.status === "success" && !v.thumb && !!v.url)
         .slice(0, 3);
       if (!items.length) return;
       const { captureAt } = await import("@/lib/media");
       for (const v of items) {
         try {
-          const thumb = await captureAt(v.url, 0.5);
+          const thumb = await captureAt(authedMediaUrl(v.url), 0.5);
           await api.setThumb(v.id, thumb);
           set({
             library: get().library.map((r) =>
@@ -426,7 +428,10 @@ export const useStudio = create<StudioState>()((set, get) => {
 
     logout: () => {
       setAuthToken(null);
+      // Strip ?token= from any in-memory playable URLs by rebuilding from the
+      // raw server rows (which never carry the token).
       set({ authRequired: true });
+      rebuild({});
     },
 
     hydrate: () => {

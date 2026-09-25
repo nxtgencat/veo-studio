@@ -19,7 +19,24 @@ function fingerprintsMatch(got: string, want: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+export function isTokenValid(token: string): boolean {
+  if (!passwordRequired()) return true;
+  return fingerprintsMatch(token, process.env.VEO_PASSWORD ?? "");
+}
+
 export function isAuthorized(header: string | undefined): boolean {
   if (!passwordRequired()) return true;
-  return fingerprintsMatch(bearerToken(header), process.env.VEO_PASSWORD ?? "");
+  return isTokenValid(bearerToken(header));
+}
+
+/**
+ * Media fallback: <video>/<img> tags can't send Authorization headers, so
+ * GET /media/:id also accepts ?token=<password>. Same secret, same check —
+ * just a different transport for browser-native media fetches (incl. Range).
+ * Only used for media; every other route stays header-only.
+ */
+export function isAuthorizedMedia(header: string | undefined, queryToken: string): boolean {
+  if (!passwordRequired()) return true;
+  if (fingerprintsMatch(bearerToken(header), process.env.VEO_PASSWORD ?? "")) return true;
+  return isTokenValid(queryToken);
 }
