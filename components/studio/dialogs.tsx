@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  Calendar, Check, MonitorPlay, RefreshCw, RotateCcw, SkipBack, SkipForward, StretchHorizontal,
+  Calendar, Check, CircleX, MonitorPlay, RefreshCw, RotateCcw, SkipBack, SkipForward, StretchHorizontal,
   Trash2,
 } from "lucide-react";
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
@@ -435,9 +435,19 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
               <RotateCcw className="size-3.5" /> Reload
             </SlateButton>
           )}
-          <SlateIconButton variant="quiet" size="icon-sm" label="Delete video" onClick={() => set({ confirmDel: v.id })}>
-            <Trash2 className="size-3.5" />
-          </SlateIconButton>
+          {v.status === "pending" ? (
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Stop polling and cancel this render (no output = no charge)">
+              <CircleX className="size-3.5" /> Cancel
+            </SlateButton>
+          ) : v.status === "failed" ? (
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Dismiss this failed record (nothing was billed)">
+              <Trash2 className="size-3.5" /> Dismiss
+            </SlateButton>
+          ) : (
+            <SlateIconButton variant="quiet" size="icon-sm" label="Delete video" onClick={() => set({ confirmDel: v.id })}>
+              <Trash2 className="size-3.5" />
+            </SlateIconButton>
+          )}
         </>
       }
     >
@@ -538,27 +548,48 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
 
 function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => void }) {
   const deleteVideo = useStudio((s) => s.deleteVideo);
+  const project = useStudio((s) => s.projects.find((x) => x.id === (s.activeId ?? "")) ?? s.projects[0]);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", confirmDel: "" });
+  const v = project?.library.find((x) => x.id === videoId);
+  const mode = v?.status === "pending" ? "cancel" : v?.status === "failed" ? "dismiss" : "delete";
+  const copy = {
+    cancel: {
+      title: "Cancel this render?",
+      body: "Stops polling and asks Vertex to stop. No output means no charge.",
+      action: "Cancel render",
+      done: "Render cancelled",
+    },
+    dismiss: {
+      title: "Dismiss this failure?",
+      body: "Removes the failed record from the thread. Nothing was billed. This cannot be undone.",
+      action: "Dismiss",
+      done: "Failure dismissed",
+    },
+    delete: {
+      title: "Delete this video?",
+      body: "Removes it from the library and its cost from the project total. This cannot be undone.",
+      action: "Delete",
+      done: "Video deleted",
+    },
+  }[mode];
   return (
     <SlateModal onClose={close}>
-      <h3 className="font-display font-bold text-[16px]">Delete this video?</h3>
-      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">
-        Removes it from the library and its cost from the project total. Pending renders are cancelled first (no charge). This cannot be undone.
-      </p>
+      <h3 className="font-display font-bold text-[16px]">{copy.title}</h3>
+      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">{copy.body}</p>
       <div className="mt-5 flex gap-2 justify-end">
         <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
         <SlateButton
           variant="danger"
           onClick={() => {
             void deleteVideo(videoId).then(() => {
-              push("Video deleted", { icon: "🗑", tone: "info" });
+              push(copy.done, { icon: mode === "delete" ? "🗑" : "✓", tone: "info" });
               set({ video: "", confirmDel: "" });
               close();
             });
           }}
         >
-          Delete
+          {copy.action}
         </SlateButton>
       </div>
     </SlateModal>

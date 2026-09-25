@@ -167,29 +167,36 @@ export function collectVideoBytes(payload: unknown): { base64: string; mime: str
   return found;
 }
 
-export async function vertexGet(name: string, ctx: VertexCtx): Promise<VertexOperation> {
-  const url = `https://${ctx.location}-aiplatform.googleapis.com/v1/${name}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.token}` } });
+export async function vertexFetchOp(
+  model: string,
+  opName: string,
+  ctx: VertexCtx,
+): Promise<VertexOperation> {
+  // Publisher-model operations are NOT readable via generic GET /v1/{name}
+  // (that 404s with an HTML page). The documented poll is fetchPredictOperation.
+  const url = `https://${ctx.location}-aiplatform.googleapis.com/v1/projects/${ctx.project}/locations/${ctx.location}/publishers/google/models/${model}:fetchPredictOperation`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ctx.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ operationName: opName }),
+  });
   if (!res.ok) {
     const text = await res.text();
     const isHtml = /<!DOCTYPE|<html/i.test(text.slice(0, 200));
     throw Object.assign(
       new Error(
         isHtml
-          ? `Vertex returned an HTML ${res.status} page for ${name} — usually a wrong region in the operation URL or an expired/deleted operation`
-          : `Vertex get failed: ${res.status} ${text.slice(0, 500)}`,
+          ? `Vertex returned an HTML ${res.status} page for ${opName} — check VERTEXAI_LOCATION matches the submit region and the project owns the operation`
+          : `Vertex fetch failed: ${res.status} ${text.slice(0, 500)}`,
       ),
-      {
-        code: "E_VERTEX_GET",
-        status: res.status,
-      },
+      { code: "E_VERTEX_GET", status: res.status },
     );
   }
-  const json = (await res.json()) as { done?: boolean; error?: { message?: string }; response?: unknown };
+  const json = (await res.json()) as { name?: string; done?: boolean; error?: { message?: string }; response?: unknown };
   const uris = json.done ? collectVideoUris(json.response) : [];
   const inline = json.done ? collectVideoBytes(json.response) : null;
   return {
-    name,
+    name: json.name ?? opName,
     done: !!json.done,
     error: json.error?.message,
     videoUris: uris,
@@ -197,13 +204,20 @@ export async function vertexGet(name: string, ctx: VertexCtx): Promise<VertexOpe
   };
 }
 
-export async function vertexCancel(name: string, ctx: VertexCtx): Promise<{ cancelled: boolean; alreadyDone: boolean }> {
-  // Best effort per docs: success is not guaranteed.
-  const getUrl = `https://${ctx.location}-aiplatform.googleapis.com/v1/${name}`;
-  const cur = await fetch(getUrl, { headers: { Authorization: `Bearer ${ctx.token}` } });
-  if (cur.ok) {
-    const j = (await cur.json()) as { done?: boolean };
-    if (j.done) return { cancelled: false, alreadyDone: true };
+export async function vertexCancel(
+  name: string,
+  ctx: VertexCtx,
+  model?: string,
+): Promise<{ cancelled: boolean; alreadyDone: boolean }> {
+  // Best effort: success is not guaranteed, and publisher-model operations
+  // have no documented cancel RPC — the generic :cancel is attempted as-is.
+  if (model) {
+    try {
+      const cur = await vertexFetchOp(model, name, ctx);
+      if (cur.done) return { cancelled: false, alreadyDone: true };
+    } catch {
+      // Fall through to the cancel attempt.
+    }
   }
   const url = `https://${ctx.location}-aiplatform.googleapis.com/v1/${name}:cancel`;
   const res = await fetch(url, {

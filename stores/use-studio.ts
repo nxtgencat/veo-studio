@@ -606,12 +606,20 @@ export const useStudio = create<StudioState>()((set, get) => {
     },
 
     deleteVideo: async (id: string) => {
-      const job = get().jobs.find((j) => j.id === id && (j.status === "queued" || j.status === "running"));
-      if (job) {
+      // Pending → cancel the live job. Failed job record → dismiss it.
+      // Finished library video → delete it. Exactly one applies per status.
+      const job = get().jobs.find((j) => j.id === id);
+      if (job && (job.status === "queued" || job.status === "running")) {
         try {
           await api.cancelJob(id);
         } catch (e) {
           set({ lastError: errOf(e) });
+        }
+      } else if (job) {
+        try {
+          await api.deleteJob(id);
+        } catch {
+          // Already terminal/gone — refresh anyway.
         }
       } else {
         try {

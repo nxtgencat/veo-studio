@@ -251,8 +251,11 @@ price live before submitting.
 ## 8. Async: idempotency, polling, webhooks
 
 - Vertex video generation is a **long-running operation (LRO)**:
-  `predictLongRunning` → `{ name: operations/… }` → poll
-  `GET /v1/{name}` until `done:true` (typical 60s–6min). Never block HTTP.
+  `predictLongRunning` → `{ name: operations/… }` → poll the publisher
+  RPC `POST .../models/{model}:fetchPredictOperation` with
+  `{"operationName": …}` until `done:true` (typical 60s–6min).
+  NOTE: generic `GET /v1/{operation}` 404s for publisher-model operations —
+  never use it. Never block HTTP.
 - Idempotency: Vertex has **no native idempotency key**. Our server
   implements it: `POST /composer/jobs` requires `Idempotency-Key` header
   (or `idempotencyKey` body field); key is UNIQUE per project. Retries with

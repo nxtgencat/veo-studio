@@ -48,7 +48,7 @@ export async function settleBackground(): Promise<void> {
 }
 
 /** Per-project driver: SA auth (default) or env creds, token minted per call (cached). */
-async function driverFor(projectId: string): Promise<Driver> {
+async function driverFor(projectId: string, model: string): Promise<Driver> {
   const auth = await resolveAuth(projectId);
   const ctx = async (): Promise<vertex.VertexCtx> => ({
     project: auth.project,
@@ -57,15 +57,15 @@ async function driverFor(projectId: string): Promise<Driver> {
   });
   return {
     submit: async (p) => vertex.vertexSubmit(p, await ctx()),
-    get: async (n) => vertex.vertexGet(n, await ctx()),
-    cancel: async (n) => vertex.vertexCancel(n, await ctx()),
+    get: async (n) => vertex.vertexFetchOp(model, n, await ctx()),
+    cancel: async (n) => vertex.vertexCancel(n, await ctx(), model || undefined),
   };
 }
 
-async function activeDriver(projectId: string): Promise<Driver | null> {
+async function activeDriver(projectId: string, model?: string): Promise<Driver | null> {
   if (testDriver) return testDriver;
   try {
-    return await driverFor(projectId);
+    return await driverFor(projectId, model ?? "");
   } catch {
     return null;
   }
@@ -150,7 +150,7 @@ async function runInBackground(jobId: string, resumeOp?: string) {
   db.query("UPDATE jobs SET status='running', progress=5, updated_at=? WHERE id=?").run(now, jobId);
   log.info({ jobId }, "job running");
 
-  const d = await activeDriver(row.project_id);
+  const d = await activeDriver(row.project_id, row.model);
   if (!d) {
     failJob(jobId, authErrorHint(row.project_id));
     return;
@@ -370,13 +370,14 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
   let notFoundStreak = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await Bun.sleep(intervalMs);
-    const cur = db.query("SELECT status, model, resolution, submitted_at FROM jobs WHERE id=?").get(jobId) as any;
+    const cur = db.query("SELECT status, progress, model, resolution, submitted_at FROM jobs WHERE id=?").get(jobId) as any;
     if (!cur || cur.status === "cancelled") return;
-    // Progress is elapsed-vs-ETA: it advances even when individual polls fail,
-    // so the bar never freezes at 15 while the ETA counts down.
+    // Progress is elapsed-vs-ETA and monotonic: it advances even when
+    // individual polls fail, and never steps back below a shown value.
     const { etaMs } = jobEta(cur.model, cur.resolution);
     const elapsed = cur.submitted_at ? Math.max(0, Date.now() - Date.parse(cur.submitted_at)) : 0;
-    const progress = etaMs > 0 ? Math.min(95, 5 + Math.round((elapsed / etaMs) * 90)) : 15;
+    const computed = etaMs > 0 ? Math.min(95, 5 + Math.round((elapsed / etaMs) * 90)) : 15;
+    const progress = Math.max(Number(cur.progress) || 0, computed);
     db.query("UPDATE jobs SET progress=?, updated_at=? WHERE id=?").run(progress, nowIso(), jobId);
     try {
       const op = await d.get(opName);
@@ -423,12 +424,15 @@ async function succeedJob(
   const db = getDb();
   const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
   if (!row) return;
-  const now = nowIso();
-  db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
-  stampDuration(jobId, row.submitted_at);
+  // Materialize FIRST: the status flip + duration stamp + library insert below
+  // are synchronous back-to-back, so pollers never observe succeeded-without-
+  // a-row (the vanish gap). Archival stays best-effort, never fails the job.
   const gs = videoUris.find((u) => u.startsWith("gs://")) ?? "";
   const stored = await materializeOutput(row.project_id, gs, inline);
+  const now = nowIso();
   const libId = Bun.randomUUIDv7();
+  db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
+  stampDuration(jobId, row.submitted_at);
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
       duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, inputs_json, vertex_operation, created_at, updated_at)
@@ -499,7 +503,7 @@ export async function cancelJob(jobId: string): Promise<
   const db = getDb();
   const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
   if (!row) return { ok: false, code: "JOB_NOT_FOUND", message: `No job ${jobId}` };
-  const d = testDriver ?? (await activeDriver(row.project_id));
+  const d = testDriver ?? (await activeDriver(row.project_id, row.model));
   if (!d) {
     return {
       ok: false,

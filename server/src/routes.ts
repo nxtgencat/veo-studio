@@ -295,6 +295,17 @@ app.get("/jobs", (c) => {
   return c.json({ jobs: rows.map(formatJob) });
 });
 
+app.delete("/jobs/:id", (c) => {
+  const db = getDb();
+  const row = db.query("SELECT status FROM jobs WHERE id=?").get(c.req.param("id")) as { status: string } | null;
+  if (!row) return err(c, 404, "JOB_NOT_FOUND", "No such job");
+  if (row.status === "queued" || row.status === "running") {
+    return err(c, 422, "JOB_ACTIVE", "Cancel a running job first — delete is for terminal records only");
+  }
+  db.query("DELETE FROM jobs WHERE id=?").run(c.req.param("id"));
+  return c.json({ deleted: true });
+});
+
 app.post("/jobs/:id/cancel", async (c) => {
   const r = await cancelJob(c.req.param("id"));
   if (!r.ok) return err(c, r.code === "JOB_NOT_FOUND" ? 404 : 502, r.code, r.message);

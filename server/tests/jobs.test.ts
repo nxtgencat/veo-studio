@@ -305,6 +305,78 @@ describe("async job flow", () => {
     setDriverForTests(null);
   });
 
+  test("success never shows without its library row (no vanish gap)", async () => {
+    const { saveSettings } = await import("../src/auth.ts");
+    saveSettings("prj_test", { saJson: await makeSaJson("gap@p.iam.gserviceaccount.com"), bucket: "test-bucket-1" });
+    const orig = globalThis.fetch;
+    (globalThis as any).fetch = async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return new Response(JSON.stringify({ access_token: "tok", expires_in: 3600 }), { status: 200 });
+      }
+      // Slow archival widens the old race window on purpose.
+      await Bun.sleep(300);
+      return new Response(new Uint8Array([7, 7]), { status: 200, headers: { "Content-Type": "video/mp4" } });
+    };
+    setDriverForTests({
+      submit: async () => "operations/gap",
+      get: async () => ({ name: "operations/gap", done: true, videoUris: ["gs://test-bucket-1/veo/out.mp4"] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    try {
+      const { createJob, getJob } = await import("../src/jobs.ts");
+      const r = createJob(base, "key-gap");
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // Tight poll: the web merges jobs+library exactly like this.
+      let sawGap = false;
+      for (let i = 0; i < 120; i++) {
+        const job = getJob(r.jobId) as any;
+        if (job.status === "succeeded") {
+          const lib = getDb().query("SELECT id FROM library WHERE job_id=?").get(r.jobId);
+          if (!lib) sawGap = true;
+          break;
+        }
+        await Bun.sleep(10);
+      }
+      expect(sawGap).toBe(false);
+      expect((getJob(r.jobId) as any).status).toBe("succeeded");
+    } finally {
+      (globalThis as any).fetch = orig;
+      setDriverForTests(null);
+    }
+  });
+
+  test("progress never steps backward", async () => {
+    let polls = 0;
+    setDriverForTests({
+      submit: async () => "operations/mono",
+      get: async () =>
+        ++polls >= 8
+          ? { name: "operations/mono", done: true, videoUris: [] }
+          : { name: "operations/mono", done: false, videoUris: [] },
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    try {
+      const { createJob, getJob } = await import("../src/jobs.ts");
+      const r = createJob(base, "key-mono");
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const seen: number[] = [];
+      for (let i = 0; i < 60; i++) {
+        seen.push(Number((getJob(r.jobId) as any).progress) || 0);
+        if ((getJob(r.jobId) as any).status === "succeeded") break;
+        await Bun.sleep(5);
+      }
+      for (let i = 1; i < seen.length; i++) {
+        expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]!);
+      }
+      expect(seen[seen.length - 1]).toBe(100);
+    } finally {
+      setDriverForTests(null);
+    }
+  });
+
   test("missing auth fails job with actionable error", async () => {
     setDriverForTests(null);
     delete process.env.VERTEX_ACCESS_TOKEN;

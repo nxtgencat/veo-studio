@@ -156,6 +156,22 @@ describe("routes", () => {
     })).status).toBe(404);
   });
 
+  test("jobs delete only terminal records", async () => {
+    const db = getDb();
+    const now = new Date().toISOString();
+    // Direct row insert: no background task involved, fully deterministic.
+    db.query(
+      `INSERT INTO jobs (id, project_id, idempotency_key, mode, model, prompt, resolution, aspect,
+        duration_seconds, audio, sample_count, inputs_json, status, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run("job_active", "prj_routes", "k-active", "t2v", "m", "p", "720p", "16:9", 8, 1, 1, "{}", "running", now, now);
+    expect((await app.request("/jobs/job_active", { method: "DELETE" })).status).toBe(422);
+    expect((await app.request("/jobs/nope", { method: "DELETE" })).status).toBe(404);
+    db.query("UPDATE jobs SET status='failed' WHERE id='job_active'").run();
+    expect((await app.request("/jobs/job_active", { method: "DELETE" })).status).toBe(200);
+    expect((await app.request("/jobs/job_active", { method: "DELETE" })).status).toBe(404);
+  });
+
   test("GET /jobs lists created jobs", async () => {
     const r = await postJob();
     expect(r.status).toBe(202);

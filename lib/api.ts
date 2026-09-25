@@ -112,6 +112,7 @@ export const api = {
   listLibrary: (projectId: string) =>
     req<{ videos: ServerVideo[] }>(`/library?projectId=${encodeURIComponent(projectId)}`),
   deleteVideo: (id: string) => req<{ deleted: boolean }>(`/library/${id}`, { method: "DELETE" }),
+  deleteJob: (id: string) => req<{ deleted: boolean }>(`/jobs/${id}`, { method: "DELETE" }),
   setThumb: (id: string, thumbDataUrl: string) =>
     req(`/library/${id}`, { method: "PATCH", body: JSON.stringify({ thumbDataUrl }) }),
   importVideo: (body: { projectId: string; prompt: string; resolution: string; aspect: string; durationSeconds: number; audio: boolean; thumbDataUrl: string; mediaId?: string }) =>
