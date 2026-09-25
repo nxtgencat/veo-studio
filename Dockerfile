@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1.12
 # Single container: Next.js web (:3000) + Bun API (loopback :8787, via /api proxy).
+# Alpine base (musl): sharp is excluded from the trace, nothing else needs glibc.
 
 ARG BUN_VERSION=1.4.2
 
-FROM oven/bun:${BUN_VERSION}-slim AS base
+FROM oven/bun:${BUN_VERSION}-alpine AS base
 WORKDIR /app
 
 FROM base AS deps
@@ -26,15 +27,17 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # pino stays external (its thread-stream worker crashes when bundled).
 # --env disable keeps PORT/SQLITE_FILE/etc. readable at runtime.
+# sharp (~38MB, next's optional dep) is unused — no next/image in the app.
 RUN --mount=type=cache,id=bun-install,target=/root/.bun/install/cache \
     --mount=type=cache,id=next-cache,target=/app/.next/cache \
     bun --bun run build && \
     bun build ./server/src/index.ts --target=bun --minify \
       --env disable \
       --external pino --external thread-stream \
-      --outfile=./backend-dist/api.js
+      --outfile=./backend-dist/api.js && \
+    rm -rf ./.next/standalone/node_modules/sharp ./.next/standalone/node_modules/@img
 
-FROM oven/bun:${BUN_VERSION}-slim AS runner
+FROM oven/bun:${BUN_VERSION}-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
