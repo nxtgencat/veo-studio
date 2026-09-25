@@ -143,8 +143,6 @@
   html {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--muted-foreground) 45%, transparent) transparent;
-    /* Reserve the gutter so pages with/without overflow don't shift layout. */
-    scrollbar-gutter: stable;
   }
   * {
     scrollbar-width: thin;
@@ -183,3 +181,97 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ============ Slate theme (own primitives, 1:1 with reference studio) ============ */
+:root {
+  --app: #faf7f1; --surface: #fffdf9; --surface-2: #f4f1ea; --surface-3: #ece7dc;
+  --line: #e3ddd0; --fg: #181a16; --fg-2: #565c52; --muted: #84897c;
+  --t-draft-bg: #e9eaec; --t-draft-fg: #454c57; --t-pending-bg: #f7ecd5; --t-pending-fg: #8f5d08;
+  --t-ok-bg: #d9efe1; --t-ok-fg: #155a39; --t-danger-bg: #f8e4df; --t-danger-fg: #a93624;
+  --t-info-bg: #dee8f8; --t-info-fg: #204a93; --t-brand-bg: #e8f4ec; --t-brand-fg: #1c7247;
+}
+.dark {
+  --app: #111310; --surface: #181a16; --surface-2: #20231e; --surface-3: #2a2e27;
+  --line: #2f342c; --fg: #f1ede4; --fg-2: #b4bbac; --muted: #8b9284;
+  --t-draft-bg: #282c26; --t-draft-fg: #b7bdb1; --t-pending-bg: #3a2f14; --t-pending-fg: #e0ae4a;
+  --t-ok-bg: #16331f; --t-ok-fg: #6fc191; --t-danger-bg: #3a201a; --t-danger-fg: #e88a76;
+  --t-info-bg: #1b2740; --t-info-fg: #8fb3ee; --t-brand-bg: #16331f; --t-brand-fg: #6fc191;
+}
+.slate-app { background: var(--app); color: var(--fg); }
+.slate-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.slate-hair { border-color: var(--line); }
+.bg-surface2 { background: var(--surface-2); }
+.hover\:bg-surface2:hover { background: var(--surface-2); }
+.bg-surface { background: var(--surface); }
+.text-fg2 { color: var(--fg-2); }
+.text-muted { color: var(--muted); }
+.text-fg { color: var(--fg); }
+.slate-badge-draft { background: var(--t-draft-bg); color: var(--t-draft-fg); }
+.slate-badge-pending { background: var(--t-pending-bg); color: var(--t-pending-fg); }
+.slate-badge-ok { background: var(--t-ok-bg); color: var(--t-ok-fg); }
+.slate-badge-danger { background: var(--t-danger-bg); color: var(--t-danger-fg); }
+.slate-badge-info { background: var(--t-info-bg); color: var(--t-info-fg); }
+.slate-badge-brand { background: var(--t-brand-bg); color: var(--t-brand-fg); }
+/* Slate button base — single source of truth so raw <button>/<label> usages
+   render identically to <SlateButton> (shadcn button.tsx parity). */
+.slate-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 38px; padding: 0 14px; border-radius: 9px; font-size: 13.5px; font-weight: 600; white-space: nowrap; border: 1px solid transparent; background-clip: padding-box; transition: background-color .15s, color .15s, border-color .15s, transform .05s; user-select: none; cursor: pointer; flex-shrink: 0; }
+.slate-btn svg { width: 15px; height: 15px; flex-shrink: 0; pointer-events: none; }
+.slate-btn:active:not(:disabled) { transform: translateY(1px); }
+.slate-btn:disabled { opacity: .45; pointer-events: none; }
+.slate-btn-sm { height: 30px; padding: 0 10px; font-size: 12.5px; border-radius: 8px; }
+.slate-btn-sm svg { width: 14px; height: 14px; }
+.slate-btn-primary { background: #1c7247; color: #fff; }
+.slate-btn-primary:hover:not(:disabled) { background: #155a39; }
+.dark .slate-btn-primary { background: #3fa96d; color: #0b1a10; }
+.dark .slate-btn-primary:hover:not(:disabled) { background: #6fc191; }
+.slate-btn-ghost { border-color: var(--line); color: var(--fg); background: var(--surface); }
+.slate-btn-ghost:hover:not(:disabled) { border-color: #3fa96d; color: #1c7247; }
+.dark .slate-btn-ghost:hover:not(:disabled) { color: #6fc191; }
+.slate-btn-quiet { color: var(--fg-2); border-color: transparent; }
+.slate-btn-quiet:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
+.slate-btn-danger { background: #c9432e; color: #fff; }
+.slate-btn-danger:hover:not(:disabled) { background: #a93624; }
+.slate-field { width: 100%; min-height: 38px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font-size: 13.5px; outline: none; }
+.slate-field::placeholder { color: var(--muted); }
+.slate-field:focus { border-color: #2a8f58; box-shadow: 0 0 0 3px rgba(42,143,88,.16); }
+.slate-lbl { display: block; font-size: 12px; font-weight: 600; color: var(--fg-2); margin-bottom: 5px; }
+.slate-tgl { position: relative; display: inline-flex; width: 38px; height: 22px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line); flex-shrink: 0; }
+.slate-tgl .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 999px; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: transform 200ms cubic-bezier(.22,1,.36,1); }
+.slate-tgl.on { background: #1c7247; border-color: #1c7247; }
+.dark .slate-tgl.on { background: #3fa96d; border-color: #3fa96d; }
+.slate-tgl.on .knob { transform: translateX(16px); }
+.slate-prog { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.slate-prog > div { height: 100%; border-radius: 999px; background: #2a8f58; transition: width .4s linear; }
+.slate-tbl { width: 100%; border-collapse: separate; border-spacing: 0; }
+.slate-tbl thead th { position: sticky; top: 0; background: var(--surface-2); color: var(--fg-2); font-size: 11.5px; font-weight: 700; text-align: left; padding: 9px 12px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.slate-tbl tbody td { padding: 9px 12px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.slate-tbl tbody tr:hover { background: var(--surface-2); }
+.slate-tbl .rt { text-align: right; }
+/* Slate menu popup (shadcn dropdown-menu.tsx parity: portal, collision, animate). */
+.slate-menu-popup { transform-origin: var(--transform-origin); }
+.slate-menu-popup[data-open] { animation: slate-menu-in .12s cubic-bezier(.22,1,.36,1); }
+.slate-menu-popup[data-closed] { animation: slate-menu-out .1s ease-in; }
+@keyframes slate-menu-in { from { opacity: 0; transform: scale(.96) translateY(-2px); } to { opacity: 1; transform: none; } }
+@keyframes slate-menu-out { from { opacity: 1; } to { opacity: 0; transform: scale(.98); } }
+/* Slate icon tile (mode button, upload cards, empty states) — one class, no inline styles. */
+.slate-tile-icon { display: grid; place-items: center; background: var(--t-brand-bg); color: var(--t-brand-fg); flex-shrink: 0; }
+/* Dashed upload tile. */
+.slate-upload-card { border-style: dashed; }
+/* Composer shell + spend card — gradients/shadows live here, not in JSX. */
+.slate-composer { border-radius: 18px; box-shadow: 0 24px 48px -16px rgba(31,41,28,.35), 0 4px 12px -4px rgba(31,41,28,.12); }
+.slate-spend-card { background: linear-gradient(135deg,var(--t-brand-bg),transparent 75%),var(--surface); }
+/* Floating mini clear button (slot boxes). */
+.slate-float-btn { box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+/* Slate skeleton (shadcn skeleton.tsx parity). */
+.slate-skeleton { animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite; background: var(--surface-3); border-radius: 8px; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+/* Keyboard-highlighted menu row (Base UI data-highlighted ~ shadcn focus:bg-accent). */
+.slate-menu-item[data-highlighted] { background: var(--surface-2); outline: none; }
+.slate-menu-item[data-highlighted].bg-\[var\(--t-brand-bg\)\] { background: var(--t-brand-bg); }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+.font-display { font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif; }
+/* Page canvas must match the slate theme: the app shell is fixed 100dvh
+   (never page-scrolls), so any viewport edge / overscroll painted in shadcn
+   bg-background shows as a dark strip next to var(--app) in dark mode. */
+html, body { background: var(--app); color: var(--fg); }
