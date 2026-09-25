@@ -120,7 +120,18 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
 const JSON_FILE = /^(manifest|projects|settings|elements|library|jobs|media)\.json$/;
 const MEDIA_FILE = /^media\/([A-Za-z0-9_-]{8,64})\.[a-z0-9]+$/;
 
-export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
+export interface ParsedBackup {
+  manifest: { version: number; exportedAt: string; includes: BackupOptions; counts: Record<string, number> };
+  projects: Table;
+  settings: Table;
+  elements: Table;
+  library: Table;
+  jobs: Table;
+  mediaIndex: Record<string, { mime?: string }>;
+  mediaFiles: Map<string, { bytes: Uint8Array; mime: string }>;
+}
+
+export async function parseBackup(data: Uint8Array, loadMedia: boolean): Promise<ParsedBackup> {
   if (data.length > BACKUP_MAX_BYTES) {
     throw Object.assign(new Error("Archive exceeds the 1 GB cap"), { code: "E_BACKUP_TOO_LARGE" });
   }
@@ -135,7 +146,7 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
       throw Object.assign(new Error(`Unexpected path in archive: ${path}`), { code: "E_BACKUP_INVALID" });
     }
   }
-  const readJson = async (name: string, required: boolean): Promise<Table> => {
+  const readTable = async (name: string, required: boolean): Promise<Table> => {
     const f = entries.get(name);
     if (!f) {
       if (required) throw Object.assign(new Error(`Archive is missing ${name}`), { code: "E_BACKUP_INVALID" });
@@ -151,12 +162,54 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
   };
   const manifestFile = entries.get("manifest.json");
   if (!manifestFile) throw Object.assign(new Error("Archive is missing manifest.json"), { code: "E_BACKUP_INVALID" });
-  const manifest = JSON.parse(await manifestFile.text()) as { version?: number };
+  const manifest = JSON.parse(await manifestFile.text()) as ParsedBackup["manifest"];
   if (manifest.version !== 1) {
     throw Object.assign(new Error(`Unsupported backup version ${String(manifest.version)}`), {
       code: "E_BACKUP_VERSION",
     });
   }
+  let mediaIndex: ParsedBackup["mediaIndex"] = {};
+  const indexFile = entries.get("media.json");
+  if (indexFile) {
+    try {
+      const parsed = JSON.parse(await indexFile.text()) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad index");
+      mediaIndex = parsed as Record<string, { mime?: string }>;
+    } catch {
+      throw Object.assign(new Error("media.json is corrupt"), { code: "E_BACKUP_INVALID" });
+    }
+  }
+  const mediaFiles = new Map<string, { bytes: Uint8Array; mime: string }>();
+  if (loadMedia) {
+    for (const [path, file] of entries) {
+      const m = MEDIA_FILE.exec(path);
+      if (!m?.[1]) continue;
+      const id = m[1];
+      mediaFiles.set(id, {
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        mime: mediaIndex[id]?.mime ?? "video/mp4",
+      });
+    }
+  } else {
+    for (const [path] of entries) {
+      const m = MEDIA_FILE.exec(path);
+      if (m?.[1]) mediaFiles.set(m[1], { bytes: new Uint8Array(0), mime: mediaIndex[m[1]]?.mime ?? "video/mp4" });
+    }
+  }
+  return {
+    manifest,
+    projects: await readTable("projects.json", true),
+    settings: await readTable("settings.json", false),
+    elements: await readTable("elements.json", false),
+    library: await readTable("library.json", false),
+    jobs: await readTable("jobs.json", false),
+    mediaIndex,
+    mediaFiles,
+  };
+}
+
+export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
+  const parsed = await parseBackup(data, true);
 
   const report: RestoreReport = {
     imported: { projects: 0, settings: 0, elements: 0, library: 0, jobs: 0, media: 0 },
@@ -173,57 +226,41 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
     report.skipped[key] = r.skipped;
   };
 
-  apply("projects", "projects", ["id", "name", "created_at", "updated_at"], await readJson("projects.json", true));
+  apply("projects", "projects", ["id", "name", "created_at", "updated_at"], parsed.projects);
   const s = insertIgnore(
     "project_settings",
     ["project_id", "sa_json", "bucket", "use_bucket", "auth_mode", "updated_at"],
-    await readJson("settings.json", false),
+    parsed.settings,
   );
   report.imported.settings = s.imported;
   apply(
     "elements",
     "elements",
     ["id", "project_id", "category", "name", "image_url", "note", "created_at"],
-    await readJson("elements.json", false),
+    parsed.elements,
   );
   apply(
     "library",
     "library",
     ["id", "project_id", "job_id", "mode", "model", "prompt", "resolution", "aspect", "duration_seconds", "audio", "status", "cost_estimate", "video_url", "gcs_uri", "thumb_url", "inputs_json", "vertex_operation", "created_at", "updated_at"],
-    (await readJson("library.json", false)).map((r) => ({ gcs_uri: "", thumb_url: "", ...r })),
+    parsed.library.map((r) => ({ gcs_uri: "", thumb_url: "", ...r })),
   );
   apply(
     "jobs",
     "jobs",
     ["id", "project_id", "idempotency_key", "mode", "model", "prompt", "resolution", "aspect", "duration_seconds", "audio", "sample_count", "seed", "inputs_json", "status", "progress", "error", "cost_estimate", "vertex_operation", "webhook_url", "created_at", "updated_at"],
-    await readJson("jobs.json", false),
+    parsed.jobs,
   );
 
-  // Media files (id taken from the path; index carries the mime).
-  const indexFile = entries.get("media.json");
-  let index: Record<string, { mime?: string }> = {};
-  if (indexFile) {
-    try {
-      const parsed = JSON.parse(await indexFile.text()) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad index");
-      index = parsed as Record<string, { mime?: string }>;
-    } catch {
-      throw Object.assign(new Error("media.json is corrupt"), { code: "E_BACKUP_INVALID" });
-    }
-  }
+  // Media files (already loaded by parseBackup).
   const db = getDb();
-  for (const [path, file] of entries) {
-    const m = MEDIA_FILE.exec(path);
-    if (!m?.[1]) continue;
-    const id = m[1];
+  for (const [id, file] of parsed.mediaFiles) {
     const exists = db.query("SELECT id FROM media WHERE id=?").get(id);
     if (exists) {
       report.skipped.media++;
       continue;
     }
-    const mime = index[id]?.mime ?? "video/mp4";
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (await importMediaFile(id, bytes, mime)) report.imported.media++;
+    if (await importMediaFile(id, file.bytes, file.mime)) report.imported.media++;
     else report.skipped.media++;
   }
 

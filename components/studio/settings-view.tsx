@@ -15,6 +15,7 @@ import { SlateButton } from "@/components/slate/button";
 import { PageHead, SlateCardHeader, SlateField, SlateLabel, SlateTextarea, SlateToggle } from "@/components/slate/core";
 import { SlateCard } from "@/components/slate/core";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
+import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
 
 function RateCell({ tier, res, audio }: { tier: string; res: string; audio: boolean }) {
   // Representative model per tier for the rate lookup (rates are tier+res based).
@@ -71,7 +72,9 @@ export function SettingsView() {
   const saveBucket = () => {
     if (bktBusy) return;
     setBktBusy(true);
-    void saveSettings({ bucket: bucket.trim(), useBucket }).then(
+    // No bucket ID means the toggle is meaningless — force it off server-side.
+    const bucketValue = bucket.trim();
+    void saveSettings({ bucket: bucketValue, useBucket: bucketValue ? useBucket : false }).then(
       () => {
         const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
         push(
@@ -254,9 +257,18 @@ export function SettingsView() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[13px] font-bold">Use bucket</p>
-                <p className="text-[11.5px] text-muted mt-0.5">On = outputs are saved to the bucket and generated videos stay extendable. Off = outputs return inline (not saved); Extend then works only for fresh uploads under 20 MB.</p>
+                <p className="text-[11.5px] text-muted mt-0.5">
+                  {bucket.trim() || project.settings.bucket
+                    ? "On = outputs are saved to the bucket and generated videos stay extendable."
+                    : "Set a bucket ID above first — there is nothing to toggle on."}
+                </p>
               </div>
-              <SlateToggle on={useBucket} label="Toggle bucket use" onFlip={() => setUseBucket((v) => !v)} />
+              <SlateToggle
+                on={useBucket && !!(bucket.trim() || project.settings.bucket)}
+                label="Toggle bucket use"
+                disabled={!bucket.trim() && !project.settings.bucket}
+                onFlip={() => setUseBucket((v) => !v)}
+              />
             </div>
             <div className="flex gap-2 flex-wrap">
               <SlateButton variant="primary" size="sm" disabled={bktBusy} onClick={saveBucket}><Check className="size-3.5" /> {bktBusy ? "Verifying…" : "Save & verify"}</SlateButton>
@@ -305,6 +317,11 @@ function BackupCard() {
   const [incGenerated, setIncGenerated] = useState(false);
   const [incUploads, setIncUploads] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [inspect, setInspect] = useState<{
+    file: File;
+    exportedAt: string;
+    counts: Record<string, number>;
+  } | null>(null);
 
   const download = () => {
     if (busy) return;
@@ -326,8 +343,23 @@ function BackupCard() {
   const restore = (f: File) => {
     if (busy) return;
     setBusy(true);
-    void api.restoreBackup(f).then(
+    // Step 1: inspect only — the confirm dialog shows what's inside.
+    void api.inspectBackup(f).then(
+      ({ manifest, counts }) => {
+        setInspect({ file: f, exportedAt: manifest.exportedAt, counts });
+      },
+      (e) => push("Cannot read backup file", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
+    ).finally(() => setBusy(false));
+  };
+
+  const confirmRestore = () => {
+    const cur = inspect;
+    if (!cur || busy) return;
+    setBusy(true);
+    // Step 2: real import after explicit confirm.
+    void api.restoreBackup(cur.file).then(
       async (rep) => {
+        setInspect(null);
         const imp = rep.imported ?? {};
         const total = Object.values(imp).reduce((a, n) => a + (Number(n) || 0), 0);
         await reloadProjects().catch(() => {});
@@ -341,11 +373,12 @@ function BackupCard() {
   };
 
   return (
-    <SlateCard>
-      <SlateCardHeader>
-        <h3 className="font-display font-bold text-[13.5px]">Backup & restore</h3>
-        <SlateBadge tone="draft">tar.gz</SlateBadge>
-      </SlateCardHeader>
+    <>
+      <SlateCard>
+        <SlateCardHeader>
+          <h3 className="font-display font-bold text-[13.5px]">Backup & restore</h3>
+          <SlateBadge tone="draft">tar.gz</SlateBadge>
+        </SlateCardHeader>
       <div className="p-4 space-y-3">
         <p className="text-[11.5px] text-muted leading-relaxed">
           Projects + connection settings are always included. Toggle what else goes in — all off by default.
@@ -380,6 +413,59 @@ function BackupCard() {
           </label>
         </div>
       </div>
-    </SlateCard>
+      </SlateCard>
+      {inspect && (
+        <RestoreConfirmDialog
+          info={inspect}
+          busy={busy}
+          close={() => setInspect(null)}
+          confirm={confirmRestore}
+        />
+      )}
+    </>
+  );
+}
+
+function RestoreConfirmDialog({
+  info,
+  busy,
+  close,
+  confirm,
+}: {
+  info: { exportedAt: string; counts: Record<string, number> };
+  busy: boolean;
+  close: () => void;
+  confirm: () => void;
+}) {
+  const rows: [string, number][] = [
+    ["Projects", info.counts.projects ?? 0],
+    ["Connection settings", info.counts.settings ?? 0],
+    ["Elements", info.counts.elements ?? 0],
+    ["Library videos", info.counts.library ?? 0],
+    ["Jobs", info.counts.jobs ?? 0],
+    ["Media files", info.counts.media ?? 0],
+  ];
+  return (
+    <SlateModal onClose={close}>
+      <SlateModalHead title="Import this backup?" onClose={close} />
+      <p className="text-[12.5px] text-muted leading-relaxed">
+        Exported {new Date(info.exportedAt).toLocaleString()}. Records that already
+        exist are skipped — nothing is overwritten or deleted.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-1.5">
+        {rows.map(([label, n]) => (
+          <div key={label} className="rounded-[8px] border slate-hair px-2.5 py-2 flex items-center justify-between" style={{ background: "var(--surface-2)" }}>
+            <span className="text-[12px] font-semibold">{label}</span>
+            <span className="text-[12px] font-mono font-bold tabular-nums">{n}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-5 flex gap-2 justify-end">
+        <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
+        <SlateButton variant="primary" disabled={busy} onClick={confirm}>
+          <Upload className="size-3.5" /> {busy ? "Importing…" : "Import"}
+        </SlateButton>
+      </div>
+    </SlateModal>
   );
 }

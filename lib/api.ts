@@ -176,6 +176,29 @@ export const api = {
     }
     return json as Record<string, Record<string, number>>;
   },
+
+  inspectBackup: async (file: File): Promise<{
+    manifest: { exportedAt: string; includes: Record<string, boolean> };
+    counts: Record<string, number>;
+  }> => {
+    let res: Response;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      res = await fetch(`${BASE}/restore/inspect`, { method: "POST", body: fd });
+    } catch (e) {
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+    }
+    const json = (await res.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      manifest?: { exportedAt: string; includes: Record<string, boolean> };
+      counts?: Record<string, number>;
+    };
+    if (!res.ok || !json.manifest || !json.counts) {
+      throw new ApiError(res.status, json.error?.code ?? "INSPECT_FAILED", json.error?.message ?? `Could not read backup (${res.status})`);
+    }
+    return { manifest: json.manifest, counts: json.counts };
+  },
 };
 
 export function apiBase(): string {

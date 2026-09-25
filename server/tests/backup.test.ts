@@ -122,6 +122,24 @@ describe("backup", () => {
     expect(res.status).toBe(422);
   });
 
+  test("inspect reports contents without importing", async () => {
+    await seedMedia();
+    const full = new Uint8Array(await (await app.request("/backup?elements=1&generated=1&uploads=1")).arrayBuffer());
+    const fd = new FormData();
+    fd.append("file", new File([full.buffer as ArrayBuffer], "b.tar.gz", { type: "application/gzip" }));
+    const res = await app.request("/restore/inspect", { method: "POST", body: fd });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { manifest: { version: number }; counts: Record<string, number> };
+    expect(json.manifest.version).toBe(1);
+    expect(json.counts).toMatchObject({ projects: 1, elements: 1, library: 2, jobs: 1, media: 1 });
+    // Nothing imported by inspecting.
+    expect(getDb().query("SELECT id FROM library WHERE project_id='prj_bk'").all().length).toBe(2);
+
+    const bad = new FormData();
+    bad.append("file", new File(["nope"], "b.tar.gz", { type: "application/gzip" }));
+    expect((await app.request("/restore/inspect", { method: "POST", body: bad })).status).toBe(422);
+  });
+
   test("delete project removes children and hosted files", async () => {
     await seedMedia();
     expect(getDb().query("SELECT id FROM elements WHERE project_id='prj_bk'").all().length).toBe(1);

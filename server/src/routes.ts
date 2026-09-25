@@ -7,7 +7,7 @@ import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
 import { probeVideoMetadata, videoMetaToResAspect } from "./frames.ts";
 import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
-import { BACKUP_MAX_BYTES, buildBackup, restoreBackup } from "./backup.ts";
+import { BACKUP_MAX_BYTES, buildBackup, parseBackup, restoreBackup } from "./backup.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -504,19 +504,50 @@ app.get("/backup", async (c) => {
 });
 
 app.post("/restore", async (c) => {
-  const form = await c.req.formData().catch(() => null);
-  const file = form?.get("file");
-  if (!(file instanceof Blob)) return err(c, 400, "FILE_REQUIRED", "Multipart field 'file' (.tar.gz) is required");
-  if (file.size > BACKUP_MAX_BYTES) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const data = await readArchiveBody(c);
+  if (typeof data === "string") return err(c, 400, "FILE_REQUIRED", data);
+  if (data === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
   try {
-    return c.json(await restoreBackup(bytes));
+    return c.json(await restoreBackup(data));
   } catch (e: any) {
     const code = e?.code ?? "RESTORE_FAILED";
     const status = code === "E_BACKUP_TOO_LARGE" ? 413 : 422;
     return err(c, status, code, e?.message ?? "Restore failed");
   }
 });
+
+/** Inspect an archive without importing anything (confirm-before-restore). */
+app.post("/restore/inspect", async (c) => {
+  const data = await readArchiveBody(c);
+  if (typeof data === "string") return err(c, 400, "FILE_REQUIRED", data);
+  if (data === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  try {
+    const parsed = await parseBackup(data, false);
+    const mediaBytes = [...parsed.mediaFiles.values()].reduce((a, f) => a + f.bytes.length, 0);
+    return c.json({
+      manifest: parsed.manifest,
+      counts: {
+        projects: parsed.projects.length,
+        settings: parsed.settings.length,
+        elements: parsed.elements.length,
+        library: parsed.library.length,
+        jobs: parsed.jobs.length,
+        media: parsed.mediaFiles.size,
+        mediaBytes,
+      },
+    });
+  } catch (e: any) {
+    return err(c, 422, e?.code ?? "RESTORE_FAILED", e?.message ?? "Inspect failed");
+  }
+});
+
+async function readArchiveBody(c: any): Promise<Uint8Array | string | null> {
+  const form = await c.req.formData().catch(() => null);
+  const file = form?.get("file");
+  if (!(file instanceof Blob)) return "Multipart field 'file' (.tar.gz) is required";
+  if (file.size > BACKUP_MAX_BYTES) return null;
+  return new Uint8Array(await file.arrayBuffer());
+}
 
 // ---------- capabilities ----------
 app.get("/models/capabilities", (c) => {
