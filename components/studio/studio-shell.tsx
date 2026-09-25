@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, usePathname } from "next/navigation";
+import { useParams } from "next/navigation";
 import { Clapperboard, Database, Film, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
 import { TABS } from "@/mock/catalog.mock";
 import { money } from "@/lib/format";
@@ -15,12 +15,14 @@ const TAB_ICONS: Record<string, typeof Film> = {
 };
 
 export function StudioShell({ children }: { children: React.ReactNode }) {
-  const params = useParams<{ projectId: string; tab: string }>();
-  const pathname = usePathname();
+  const params = useParams<{ projectId?: string; tab?: string }>();
   const projects = useStudio((s) => s.projects);
-  const activeId = useStudio((s) => s.activeId);
-  const active = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
-  const setActiveId = useStudio((s) => s.setActiveId);
+  // Route is the source of truth: prefer the URL project so header/sidebar
+  // can never disagree with the views (which render by params). The tab page
+  // syncs the store's activeId from the URL for mutations.
+  const storeActive = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
+  const active =
+    (params.projectId ? projects.find((x) => x.id === params.projectId) : undefined) ?? storeActive;
 
   const totalPending = projects.reduce((a, q) => a + pendingOf(q), 0);
   const firstRunning = projects.find((x) => pendingOf(x) > 0);
@@ -144,9 +146,6 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
         {TABS.map((t) => {
           const Icon = TAB_ICONS[t.id] ?? Film;
           const on = params.tab === t.id;
-          void pathname;
-          void setActiveId;
-          void activeId;
           return (
             <Link
               key={t.id}

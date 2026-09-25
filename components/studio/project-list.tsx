@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
@@ -15,10 +15,18 @@ import { pendingOf } from "@/lib/pricing";
 export function ProjectList({ compact }: { compact?: boolean }) {
   const projects = useStudio((s) => s.projects);
   const activeId = useStudio((s) => s.activeId);
-  const setActiveId = useStudio((s) => s.setActiveId);
+  const params = useParams<{ tab?: string }>();
+  const router = useRouter();
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
+
+  // Project switch must navigate (route is the source of truth for the
+  // active project) — the tab page then syncs the store from the URL.
+  const pick = (id: string) => {
+    if (id === activeId) return;
+    router.push(`/p/${id}/${params.tab ?? "generate"}`);
+  };
 
   return (
     <>
@@ -26,7 +34,7 @@ export function ProjectList({ compact }: { compact?: boolean }) {
         {projects.map((q, i) => (
           <div
             key={q.id}
-            onClick={() => setActiveId(q.id)}
+            onClick={() => pick(q.id)}
             role="option"
             aria-selected={q.id === activeId}
             className={`flex items-center gap-2.5 pl-2.5 pr-1.5 py-2 cursor-pointer ${
