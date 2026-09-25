@@ -1,9 +1,13 @@
 {
-  "name": "storefront",
+  "name": "veo",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "bun@1.4.2",
+  "workspaces": ["server"],
   "scripts": {
-    "dev": "next dev",
+    "dev": "bun run --parallel dev:web dev:server",
+    "dev:web": "next dev",
+    "dev:server": "bun run --filter server dev",
     "build": "next build",
     "start": "next start",
     "lint": "oxlint",
@@ -43,7 +47,6 @@
     "tailwindcss": "^4",
     "typescript": "^7"
   },
-  "packageManager": "bun@1.4.2",
   "ignoreScripts": [
     "sharp",
     "unrs-resolver"

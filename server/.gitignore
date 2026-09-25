@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+bun.lock
 /.pnp
 .pnp.*
 .yarn/*
@@ -43,9 +44,3 @@ next-env.d.ts
 
 # agent browser artifacts
 .openchamber/
-
-# local sqlite (server provenance db)
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-data/
