@@ -8,6 +8,7 @@ import { money } from "@/lib/format";
 import { pendingOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { SlateBadge } from "@/components/slate/badge";
+import { SlateSidebar, SlateSidebarDrawer, SlateSidebarTrigger } from "@/components/slate/sidebar";
 import { ProjectList } from "@/components/studio/project-list";
 
 const TAB_ICONS: Record<string, typeof Film> = {
@@ -44,6 +45,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="slate-app h-[100dvh] flex flex-col overflow-hidden">
       <header className="relative z-40 h-[52px] shrink-0 border-b slate-hair bg-surface/90 backdrop-blur-xl flex items-center gap-2.5 px-3 sm:px-4 lg:px-6">
+        <SlateSidebarTrigger />
         <span className="grid place-items-center w-7 h-7 rounded-[9px] bg-[#1C7247] dark:bg-[#3FA96D] text-white dark:text-[#0B1A10] shrink-0">
           <Clapperboard className="size-4" />
         </span>
@@ -67,7 +69,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
-        <aside className="hidden lg:flex flex-col w-[260px] shrink-0 border-r slate-hair overflow-hidden">
+        <SlateSidebar>
           <div className="px-3 pt-3 pb-2 shrink-0">
             <p className="px-2 mb-1 text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">Studio</p>
             <div className="flex flex-col gap-0.5">
@@ -112,22 +114,36 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <div className="p-3 pt-2 shrink-0 border-t slate-hair">
-            <div className="rounded-[12px] border slate-hair p-3.5 slate-spend-card">
-              <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">Project spend</p>
-              <p className="font-display font-bold text-[24px] mt-0.5 leading-none tabular-nums">
-                {money(spendOf(active))}
-              </p>
-              <p className="text-[11px] text-muted mt-1.5 font-mono tabular-nums">
-                {active.library.length} videos · {active.library.filter((v) => v.status === "success").length} delivered
-              </p>
-            </div>
+            <SpendCard
+              spend={money(spendOf(active))}
+              videos={active.library.length}
+              delivered={active.library.filter((v) => v.status === "success").length}
+            />
           </div>
-        </aside>
+        </SlateSidebar>
 
         <main className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-5 lg:px-8 py-5">
           {children}
         </main>
       </div>
+
+      <SlateSidebarDrawer
+        title="Projects"
+        footer={
+          <SpendCard
+            spend={money(spendOf(active))}
+            videos={active.library.length}
+            delivered={active.library.filter((v) => v.status === "success").length}
+          />
+        }
+      >
+        <div className="flex items-center px-2 mb-1.5">
+          <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">
+            Projects · {projects.length}
+          </p>
+        </div>
+        <ProjectList compact />
+      </SlateSidebarDrawer>
 
       <footer className="shrink-0 h-9 border-t slate-hair bg-surface/90 hidden sm:flex items-center gap-4 px-4 lg:px-6 text-[11.5px] text-muted overflow-hidden whitespace-nowrap">
         <span className="hidden lg:flex items-center gap-1.5">
@@ -159,6 +175,18 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           );
         })}
       </nav>
+    </div>
+  );
+}
+
+function SpendCard({ spend, videos, delivered }: { spend: string; videos: number; delivered: number }) {
+  return (
+    <div className="rounded-[12px] border slate-hair p-3.5 slate-spend-card">
+      <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">Project spend</p>
+      <p className="font-display font-bold text-[24px] mt-0.5 leading-none tabular-nums">{spend}</p>
+      <p className="text-[11px] text-muted mt-1.5 font-mono tabular-nums">
+        {videos} videos · {delivered} delivered
+      </p>
     </div>
   );
 }
