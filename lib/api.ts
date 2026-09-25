@@ -110,6 +110,8 @@ export const api = {
   listLibrary: (projectId: string) =>
     req<{ videos: ServerVideo[] }>(`/library?projectId=${encodeURIComponent(projectId)}`),
   deleteVideo: (id: string) => req<{ deleted: boolean }>(`/library/${id}`, { method: "DELETE" }),
+  setThumb: (id: string, thumbDataUrl: string) =>
+    req(`/library/${id}`, { method: "PATCH", body: JSON.stringify({ thumbDataUrl }) }),
   importVideo: (body: { projectId: string; prompt: string; resolution: string; aspect: string; durationSeconds: number; audio: boolean; thumbDataUrl: string; mediaId?: string }) =>
     req<{ id: string }>("/library/import", { method: "POST", body: JSON.stringify(body) }),
 
@@ -133,6 +135,46 @@ export const api = {
       throw new ApiError(res.status, json.error?.code ?? "UPLOAD_FAILED", json.error?.message ?? `Upload failed (${res.status})`);
     }
     return { id: json.id, url: json.url, bytes: json.bytes ?? 0, mime: json.mime ?? "" };
+  },
+
+  downloadBackup: async (opts: { elements: boolean; generated: boolean; uploads: boolean }): Promise<{ blob: Blob; filename: string }> => {
+    const q = new URLSearchParams({
+      elements: opts.elements ? "1" : "0",
+      generated: opts.generated ? "1" : "0",
+      uploads: opts.uploads ? "1" : "0",
+    }).toString();
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/backup?${q}`);
+    } catch (e) {
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+    }
+    if (!res.ok) {
+      const json = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+      throw new ApiError(res.status, json.error?.code ?? "BACKUP_FAILED", json.error?.message ?? `Backup failed (${res.status})`);
+    }
+    const cd = res.headers.get("content-disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(cd)?.[1] ?? "veo-backup.tar.gz";
+    return { blob: await res.blob(), filename };
+  },
+
+  restoreBackup: async (file: File): Promise<Record<string, Record<string, number>>> => {
+    let res: Response;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      res = await fetch(`${BASE}/restore`, { method: "POST", body: fd });
+    } catch (e) {
+      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${BASE} — is it running?`, String(e));
+    }
+    const json = (await res.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string };
+      imported?: Record<string, number>;
+    };
+    if (!res.ok) {
+      throw new ApiError(res.status, json.error?.code ?? "RESTORE_FAILED", json.error?.message ?? `Restore failed (${res.status})`);
+    }
+    return json as Record<string, Record<string, number>>;
   },
 };
 

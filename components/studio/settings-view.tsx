@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Check, KeyRound, LogOut, Moon, Sun, MonitorPlay } from "lucide-react";
+import { Check, Download, KeyRound, LogOut, Moon, Sun, MonitorPlay, Upload } from "lucide-react";
 import { YT_CATS, YT_PRIVS } from "@/lib/catalog";
+import { api } from "@/lib/api";
 import { rateFor } from "@/lib/pricing";
 import { ytCatLabel, ytConnect } from "@/lib/youtube";
 import { useStudio } from "@/stores/use-studio";
@@ -186,6 +187,7 @@ export function SettingsView() {
             </p>
           </div>
         </SlateCard>
+        <BackupCard />
         </div>
         <div className="min-w-0 space-y-4">
         <SlateCard>
@@ -292,5 +294,92 @@ export function SettingsView() {
         </SlateCard>
       </div>
     </>
+  );
+}
+
+function BackupCard() {
+  const push = useToasts((s) => s.push);
+  const reloadProjects = useStudio((s) => s.reloadProjects);
+  // All scopes default off: a bare backup is projects + settings only.
+  const [incElements, setIncElements] = useState(false);
+  const [incGenerated, setIncGenerated] = useState(false);
+  const [incUploads, setIncUploads] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const download = () => {
+    if (busy) return;
+    setBusy(true);
+    void api.downloadBackup({ elements: incElements, generated: incGenerated, uploads: incUploads }).then(
+      ({ blob, filename }) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        push("Backup downloaded", { icon: "✓", detail: filename });
+      },
+      (e) => push("Backup failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+    ).finally(() => setBusy(false));
+  };
+
+  const restore = (f: File) => {
+    if (busy) return;
+    setBusy(true);
+    void api.restoreBackup(f).then(
+      async (rep) => {
+        const imp = rep.imported ?? {};
+        const total = Object.values(imp).reduce((a, n) => a + (Number(n) || 0), 0);
+        await reloadProjects().catch(() => {});
+        push(`Restore complete — ${total} records imported`, {
+          icon: "✓",
+          detail: `projects ${imp.projects ?? 0} · elements ${imp.elements ?? 0} · library ${imp.library ?? 0} · media ${imp.media ?? 0}`,
+        });
+      },
+      (e) => push("Restore failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
+    ).finally(() => setBusy(false));
+  };
+
+  return (
+    <SlateCard>
+      <SlateCardHeader>
+        <h3 className="font-display font-bold text-[13.5px]">Backup & restore</h3>
+        <SlateBadge tone="draft">tar.gz</SlateBadge>
+      </SlateCardHeader>
+      <div className="p-4 space-y-3">
+        <p className="text-[11.5px] text-muted leading-relaxed">
+          Projects + connection settings are always included. Toggle what else goes in — all off by default.
+        </p>
+        {([
+          ["Elements (faces, places, props, stills)", incElements, setIncElements],
+          ["Generated library + videos", incGenerated, setIncGenerated],
+          ["Uploaded library + files", incUploads, setIncUploads],
+        ] as const).map(([label, on, flip]) => (
+          <div key={label} className="flex items-center justify-between gap-3">
+            <p className="text-[13px] font-bold">{label}</p>
+            <SlateToggle on={on} label={label} onFlip={() => flip(!on)} />
+          </div>
+        ))}
+        <div className="flex gap-2 flex-wrap pt-1">
+          <SlateButton variant="primary" size="sm" disabled={busy} onClick={download}>
+            <Download className="size-3.5" /> {busy ? "Working…" : "Download backup"}
+          </SlateButton>
+          <label className="slate-btn slate-btn-ghost slate-btn-sm cursor-pointer">
+            <Upload className="size-3.5" /> Restore
+            <input
+              type="file"
+              accept=".tar.gz,.tgz,application/gzip"
+              className="hidden"
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) restore(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+      </div>
+    </SlateCard>
   );
 }

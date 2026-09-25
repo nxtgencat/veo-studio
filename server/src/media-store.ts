@@ -34,6 +34,22 @@ export function isUuidLike(id: string): boolean {
   return /^[A-Za-z0-9_-]{8,64}$/.test(id);
 }
 
+/** Store bytes under a caller-chosen id (restore path). False when taken. */
+export async function importMediaFile(id: string, bytes: Uint8Array, mime: string): Promise<boolean> {
+  if (!isUuidLike(id)) return false;
+  const exists = getDb().query("SELECT id FROM media WHERE id=?").get(id);
+  if (exists) return false;
+  if (bytes.length > MEDIA_MAX_BYTES) {
+    throw Object.assign(new Error("File exceeds the 200 MB media limit"), { code: "E_MEDIA_TOO_LARGE" });
+  }
+  const path = join(mediaDir(), `${id}.${extForMime(mime)}`);
+  await Bun.write(path, bytes);
+  getDb()
+    .query("INSERT INTO media (id, mime, bytes, path, created_at) VALUES (?,?,?,?,?)")
+    .run(id, mime, bytes.length, path, nowIso());
+  return true;
+}
+
 export interface MediaRecord {
   id: string;
   mime: string;

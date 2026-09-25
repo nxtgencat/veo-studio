@@ -6,6 +6,7 @@ import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } f
 import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
 import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
+import { BACKUP_MAX_BYTES, buildBackup, restoreBackup } from "./backup.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -70,9 +71,24 @@ app.patch("/projects/:id", async (c) => {
   return c.json({ ...(row as object), name });
 });
 
-app.delete("/projects/:id", (c) => {
-  const r = getDb().query("DELETE FROM projects WHERE id=?").run(c.req.param("id"));
-  if (!r.changes) return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+app.delete("/projects/:id", async (c) => {
+  const db = getDb();
+  const pid = c.req.param("id");
+  if (!db.query("SELECT id FROM projects WHERE id=?").get(pid)) {
+    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  }
+  const vids = db.query("SELECT video_url FROM library WHERE project_id=?").all(pid) as { video_url: string }[];
+  const mids = [...new Set(vids.map((v) => mediaIdFromUrl(v.video_url)).filter((m): m is string => !!m))];
+  db.query("DELETE FROM elements WHERE project_id=?").run(pid);
+  db.query("DELETE FROM jobs WHERE project_id=?").run(pid);
+  db.query("DELETE FROM library WHERE project_id=?").run(pid);
+  db.query("DELETE FROM project_settings WHERE project_id=?").run(pid);
+  db.query("DELETE FROM projects WHERE id=?").run(pid);
+  // Drop hosted files no other library row references (GCS objects untouched).
+  for (const mid of mids) {
+    const refs = db.query("SELECT id FROM library WHERE video_url=?").get(`/media/${mid}`);
+    if (!refs) await deleteMedia(mid);
+  }
   return c.json({ deleted: true });
 });
 
@@ -383,6 +399,25 @@ app.get("/library/:id", (c) => {
   return c.json(row);
 });
 
+app.patch("/library/:id", async (c) => {
+  const db = getDb();
+  const row = db.query("SELECT * FROM library WHERE id=?").get(c.req.param("id")) as any;
+  if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
+  const body = await c.req.json().catch(() => ({}));
+  const thumb = typeof body.thumbDataUrl === "string" ? body.thumbDataUrl : "";
+  if (!thumb) return err(c, 422, "THUMB_REQUIRED", "thumbDataUrl is required");
+  // Browser-captured JPEG/PNG only, ≤2 MB — same rules as import thumbs.
+  const inline = parseDataUrl(thumb);
+  if (!inline || !isAllowedImageMime(inline.mime) || !sniffImageMime(inline.bytes)) {
+    return err(c, 422, "E_IMAGE_TYPE", `Thumbnail must be JPEG or PNG, got ${inline?.mime || "unknown"}`);
+  }
+  if (inline.bytes.length > 2000000) {
+    return err(c, 422, "E_IMAGE_TOO_LARGE", "Thumbnail exceeds 2 MB");
+  }
+  db.query("UPDATE library SET thumb_url=?, updated_at=? WHERE id=?").run(thumb, nowIso(), row.id);
+  return c.json({ ...(row as object), thumb_url: thumb });
+});
+
 app.delete("/library/:id", async (c) => {
   const db = getDb();
   const row = db.query("SELECT video_url FROM library WHERE id=?").get(c.req.param("id")) as { video_url: string } | null;
@@ -431,6 +466,42 @@ app.post("/library/import", async (c) => {
   );
   logger.info({ id, projectId: parsed.data.projectId, videoUrl }, "video imported");
   return c.json({ id }, 201);
+});
+
+// ---------- backup & restore ----------
+app.get("/backup", async (c) => {
+  const q = c.req.query();
+  const opts = {
+    elements: q.elements === "1",
+    generated: q.generated === "1",
+    uploads: q.uploads === "1",
+  };
+  try {
+    const { filename, bytes } = await buildBackup(opts);
+    return new Response(bytes, {
+      headers: {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+      },
+    });
+  } catch (e: any) {
+    return err(c, e?.code === "E_BACKUP_TOO_LARGE" ? 413 : 500, e?.code ?? "BACKUP_FAILED", e?.message ?? "Backup failed");
+  }
+});
+
+app.post("/restore", async (c) => {
+  const form = await c.req.formData().catch(() => null);
+  const file = form?.get("file");
+  if (!(file instanceof Blob)) return err(c, 400, "FILE_REQUIRED", "Multipart field 'file' (.tar.gz) is required");
+  if (file.size > BACKUP_MAX_BYTES) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    return c.json(await restoreBackup(bytes));
+  } catch (e: any) {
+    const code = e?.code ?? "RESTORE_FAILED";
+    const status = code === "E_BACKUP_TOO_LARGE" ? 413 : 422;
+    return err(c, status, code, e?.message ?? "Restore failed");
+  }
 });
 
 // ---------- capabilities ----------

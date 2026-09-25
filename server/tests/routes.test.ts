@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ process.env.MEDIA_DIR = join(tmpdir(), `veo-media-test-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { app } from "../src/routes.ts";
-import { setDriverForTests } from "../src/jobs.ts";
+import { setDriverForTests, settleBackground } from "../src/jobs.ts";
 
 // Real RSA keys so the live key check exercises the true signing path.
 async function makeSaJson(email: string): Promise<string> {
@@ -47,6 +47,11 @@ function seedProject(id = "prj_routes") {
 beforeEach(() => {
   resetDbForTests();
   seedProject();
+});
+
+afterEach(async () => {
+  await settleBackground();
+  setDriverForTests(null);
 });
 
 async function postJob() {
@@ -120,6 +125,35 @@ describe("routes", () => {
     fd.append("file", new File(["hi"], "a.txt", { type: "text/plain" }));
     const up = await app.request("/media/upload", { method: "POST", body: fd });
     expect(up.status).toBe(415);
+  });
+
+  test("library thumbs update via PATCH", async () => {
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const imp = await app.request("/library/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: "prj_routes", prompt: "t" }),
+    });
+    const { id } = (await imp.json()) as { id: string };
+    const bad = await app.request(`/library/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thumbDataUrl: "data:image/gif;base64,R0lGODdhAQABAIAAAP8AAAAAACwAAAAAAQABAAACAkQBADs=" }),
+    });
+    expect(bad.status).toBe(422);
+    const good = await app.request(`/library/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thumbDataUrl: png }),
+    });
+    expect(good.status).toBe(200);
+    const row = (await (await app.request(`/library/${id}`)).json()) as { thumb_url: string };
+    expect(row.thumb_url).toBe(png);
+    expect((await app.request("/library/nope", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thumbDataUrl: png }),
+    })).status).toBe(404);
   });
 
   test("GET /jobs lists created jobs", async () => {

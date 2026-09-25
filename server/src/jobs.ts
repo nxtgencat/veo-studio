@@ -36,6 +36,16 @@ export function setDriverForTests(d: Driver | null) {
   testDriver = d;
 }
 
+// In-flight background tasks. Tests await settleBackground() so no task
+// outlives its test and trips over the next test's fresh database.
+const inflight = new Set<Promise<unknown>>();
+
+export async function settleBackground(): Promise<void> {
+  while (inflight.size > 0) {
+    await Promise.allSettled([...inflight]);
+  }
+}
+
 /** Per-project driver: SA auth (default) or env creds, token minted per call (cached). */
 async function driverFor(projectId: string): Promise<Driver> {
   const auth = await resolveAuth(projectId);
@@ -123,7 +133,11 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
   }
   // Never let a background crash surface as an unhandled rejection
   // (e.g. DB reset under test teardown while a poll is in flight).
-  void runInBackground(id).catch((e) => log.error({ jobId: id, err: String(e) }, "background task crashed"));
+  const task = runInBackground(id);
+  inflight.add(task);
+  void task
+    .catch((e) => log.error({ jobId: id, err: String(e) }, "background task crashed"))
+    .finally(() => inflight.delete(task));
   return { ok: true, jobId: id, deduped: false };
 }
 

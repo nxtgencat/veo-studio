@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,7 @@ process.env.JOB_POLL_ATTEMPTS = "50";
 process.env.MEDIA_DIR = join(tmpdir(), `veo-media-jobs-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
-import { cancelJob, createJob, getJob, setDriverForTests } from "../src/jobs.ts";
+import { cancelJob, createJob, getJob, setDriverForTests, settleBackground } from "../src/jobs.ts";
 import type { JobInput } from "../src/validation.ts";
 
 const base: JobInput = {
@@ -50,6 +50,12 @@ async function makeSaJson(email: string): Promise<string> {
 beforeEach(() => {
   resetDbForTests();
   seedProject();
+});
+
+afterEach(async () => {
+  // Drain background tasks so none spill into the next test's database.
+  await settleBackground();
+  setDriverForTests(null);
 });
 
 describe("async job flow", () => {

@@ -193,6 +193,7 @@ interface StudioState {
   serverSettings: (projectId: string) => ServerSettings | undefined;
   hydrate: () => Promise<void>;
   retry: () => Promise<void>;
+  reloadProjects: () => Promise<void>;
   ensureLoaded: (projectId: string) => Promise<void>;
   refreshActive: () => Promise<void>;
   pollJobs: () => Promise<void>;
@@ -300,6 +301,37 @@ export const useStudio = create<StudioState>()((set, get) => {
     });
     loaded.add(projectId);
     rebuild({});
+    // Fire-and-forget: playable successes without thumbs get browser captures.
+    void backfillThumbs(projectId).catch(() => {});
+  }
+
+  // Capture real thumbnails for succeeded videos missing them. Browser-only
+  // (canvas) by necessity — Bun has no video decoder. Guarded + capped.
+  let backfilling = false;
+  async function backfillThumbs(projectId: string) {
+    if (backfilling) return;
+    backfilling = true;
+    try {
+      const items = (get().projects.find((p) => p.id === projectId)?.library ?? [])
+        .filter((v) => v.status === "success" && !v.thumb && v.url.startsWith("http"))
+        .slice(0, 3);
+      if (!items.length) return;
+      const { captureAt } = await import("@/lib/media");
+      for (const v of items) {
+        try {
+          const thumb = await captureAt(v.url, 0.5);
+          await api.setThumb(v.id, thumb);
+          set({
+            library: get().library.map((r) =>
+              r.id === v.id ? { ...r, thumb_url: thumb } : r,
+            ),
+          });
+          rebuild({});
+        } catch { /* keep placeholder; retried next refresh */ }
+      }
+    } finally {
+      backfilling = false;
+    }
   }
 
   async function doHydrate() {
@@ -357,6 +389,22 @@ export const useStudio = create<StudioState>()((set, get) => {
     retry: async () => {
       set({ hydrated: false });
       await get().hydrate();
+    },
+
+    reloadProjects: async () => {
+      const projs = await api.listProjects();
+      const srv: SrvProject[] = projs.projects.map((p) => ({
+        id: p.id,
+        name: p.name,
+        createdAt: Date.parse(p.created_at) || Date.now(),
+      }));
+      let activeId = get().activeId;
+      if (!activeId || !srv.some((p) => p.id === activeId)) activeId = srv[0]?.id ?? null;
+      local.activeId = activeId;
+      persist();
+      set({ srvProjects: srv, activeId });
+      rebuild({});
+      if (activeId) await get().ensureLoaded(activeId);
     },
 
     ensureLoaded: async (projectId: string) => {

@@ -43,6 +43,8 @@ GOOGLE_CLOUD_PROJECT=… VERTEX_ACCESS_TOKEN=… VERTEXAI_LOCATION=us-central1
   object read — Storage Object User suffices).
 - `POST /media/upload` (multipart `file`, 200 MB cap) + `GET /media/:id`
   (Range-capable) — the server file store behind uploads and archived outputs.
+- `GET /backup?elements=|generated=|uploads=` (tar.gz download) +
+  `POST /restore` (multipart) — full merge restore with per-table counts.
 
 ## Rules enforced (see `src/validation.ts`)
 
