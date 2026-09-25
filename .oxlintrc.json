@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["nextjs", "react", "typescript", "jsx-a11y", "import"],
+  "ignorePatterns": [".next/**", "out/**", "build/**", "next-env.d.ts"],
+  "overrides": [
+    {
+      "files": ["components/ui/**", "hooks/use-mobile.ts"],
+      "rules": {
+        "jsx-a11y/prefer-tag-over-role": "off",
+        "jsx-a11y/label-has-associated-control": "off",
+        "jsx-a11y/click-events-have-key-events": "off",
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "react/set-state-in-effect": "off"
+      }
+    }
+  ]
+}
