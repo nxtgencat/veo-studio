@@ -5,6 +5,7 @@ import { getDb, nowIso } from "./db.ts";
 import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
+import { probeVideoMetadata, videoMetaToResAspect } from "./frames.ts";
 import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
 import { BACKUP_MAX_BYTES, buildBackup, restoreBackup } from "./backup.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
@@ -448,10 +449,23 @@ app.post("/library/import", async (c) => {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
   let videoUrl = "";
+  let resolution = parsed.data.resolution;
+  let aspect = parsed.data.aspect;
+  let durationSeconds = parsed.data.durationSeconds;
   if (parsed.data.mediaId) {
     const hit = getMedia(parsed.data.mediaId);
     if (!hit) return err(c, 422, "MEDIA_NOT_FOUND", "Upload the file via POST /media/upload first");
     videoUrl = `/media/${parsed.data.mediaId}`;
+    // Verify container server-side instead of trusting client-declared meta.
+    try {
+      const meta = await probeVideoMetadata(new Uint8Array(await Bun.file(hit.path).bytes()), hit.mime);
+      const mapped = videoMetaToResAspect(meta.width, meta.height);
+      resolution = mapped.res;
+      aspect = mapped.aspect;
+      durationSeconds = Math.max(1, Math.round(meta.durationSeconds));
+    } catch (e) {
+      logger.error({ mediaId: parsed.data.mediaId, err: String(e) }, "import probe failed, keeping client meta");
+    }
   }
   const id = Bun.randomUUIDv7();
   const now = nowIso();
@@ -461,7 +475,7 @@ app.post("/library/import", async (c) => {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id, parsed.data.projectId, `import-${id}`, "t2v", "import", parsed.data.prompt,
-    parsed.data.resolution, parsed.data.aspect, parsed.data.durationSeconds,
+    resolution, aspect, durationSeconds,
     parsed.data.audio ? 1 : 0, "succeeded", 0, videoUrl, parsed.data.thumbDataUrl, "{}", now, now,
   );
   logger.info({ id, projectId: parsed.data.projectId, videoUrl }, "video imported");

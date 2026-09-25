@@ -83,6 +83,16 @@ sites is a crop, not native).
   the same `extend` task — we disable Extend for Veo 2).
 - Aspect 16:9/9:16. 24fps.
 
+## 3d. Media library honesty (what's verified where)
+
+- **MediaBunny is demux-only in Bun** (no WebCodecs decoder): duration,
+  dimensions, codec, keyframe index via `probeVideoMetadata` — including
+  verifying import uploads server-side instead of trusting client meta.
+  Pixel decode (`VideoSampleSink`) degrades gracefully where no decoder exists.
+- **Still dimensions come from `Bun.Image.metadata()`** (header-only, native):
+  the f2v aspect-pairing rule is enforced at submit (`FRAMES_ASPECT_MISMATCH`),
+  not just in the browser pre-check.
+
 ## 3c. Server media store (what persists where)
 
 - **Elements/images:** inline data-URL uploads persist in sqlite (≤20 MB

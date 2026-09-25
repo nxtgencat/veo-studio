@@ -6,7 +6,7 @@
 // decoder exists we return base64 PNGs (hand-rolled encoder, zero native
 // deps); otherwise `thumbnailStatus` explains why `thumbnails` is empty.
 
-import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, VideoSample, VideoSampleSink } from "mediabunny";
+import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input, VideoSample, VideoSampleSink } from "mediabunny";
 // NOTE: PNG IDAT needs zlib-wrapped deflate. Bun.deflateSync emits raw
 // deflate (verified: node inflateSync rejects it, even with windowBits),
 // so node:zlib stays here deliberately — correctness over API purity.
@@ -81,20 +81,51 @@ export function encodePngRgba(rgba: Uint8Array, width: number, height: number): 
   return out;
 }
 
-export async function extractFrames(
-  bytes: Uint8Array,
-  mimeType: string,
-  opts: ExtractOptions = {},
-): Promise<ExtractResult> {
-  const owned = Uint8Array.from(bytes);
-  const blob = new Blob([owned.buffer as ArrayBuffer], { type: mimeType || "video/mp4" });
-  const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+export interface VideoMetadata {
+  durationSeconds: number;
+  width: number;
+  height: number;
+  codec: string | null;
+}
+
+/** Pure-demux probe (no decoder needed — works headless in Bun). */
+export async function probeVideoMetadata(bytes: Uint8Array, _mimeType: string): Promise<VideoMetadata> {
+  // BufferSource reads the bytes in place — no Blob copy.
+  const input = new Input({ source: new BufferSource(bytes), formats: ALL_FORMATS });
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track) throw new Error("NO_VIDEO_TRACK: input contains no decodable video track");
     const duration = await input.computeDuration();
-    const width = track.codedWidth ?? track.displayWidth ?? 0;
-    const height = track.codedHeight ?? track.displayHeight ?? 0;
+    return {
+      durationSeconds: Math.round(duration * 100) / 100,
+      width: await track.getDisplayWidth(),
+      height: await track.getDisplayHeight(),
+      codec: (await track.getCodec()) ?? null,
+    };
+  } finally {
+    input.dispose();
+  }
+}
+
+export function videoMetaToResAspect(width: number, height: number): { res: "720p" | "1080p" | "4K"; aspect: "16:9" | "9:16" } {
+  const long = Math.max(width, height);
+  return {
+    res: long >= 3000 ? "4K" : long >= 1500 ? "1080p" : "720p",
+    aspect: width >= height ? "16:9" : "9:16",
+  };
+}
+export async function extractFrames(
+  bytes: Uint8Array,
+  _mimeType: string,
+  opts: ExtractOptions = {},
+): Promise<ExtractResult> {
+  const input = new Input({ source: new BufferSource(bytes), formats: ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) throw new Error("NO_VIDEO_TRACK: input contains no decodable video track");
+    const duration = await input.computeDuration();
+    const width = await track.getDisplayWidth();
+    const height = await track.getDisplayHeight();
 
     // Keyframe/packet index — pure demux, works headless.
     const packetSink = new EncodedPacketSink(track);
@@ -151,7 +182,7 @@ export async function extractFrames(
       durationSeconds: Math.round(duration * 100) / 100,
       width,
       height,
-      codec: (track.codec as string | null) ?? null,
+      codec: (await track.getCodec()) ?? null,
       keyframeCount: keyframes,
       frames,
       thumbnails,

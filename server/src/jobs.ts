@@ -207,6 +207,16 @@ async function runInBackground(jobId: string) {
         params.referenceImages = refs.map((r) => ({ bytes: r.base64, mimeType: r.mime }));
       }
     }
+    if (row.mode === "f2v" && params.imageBytes && params.lastFrameBytes) {
+      const bad = await framesAspectMismatch(params.imageBytes, params.lastFrameBytes, row.aspect);
+      if (bad) {
+        failJob(
+          jobId,
+          `FRAMES_ASPECT_MISMATCH: both stills must match the ${row.aspect} output — one still is ${bad}.`,
+        );
+        return;
+      }
+    }
     if (row.mode === "extend") {
       const src = await resolveExtendSource(row);
       if (!src) {
@@ -253,6 +263,26 @@ function authErrorHint(projectId: string): string {
   } catch (e: any) {
     return e?.code ? `${e.code}: ${e.message}` : String(e);
   }
+}
+
+/** Frames pairing via Bun.Image header metadata (no full decode). Lenient: unreadable stills skip. */
+async function framesAspectMismatch(
+  firstB64: string,
+  lastB64: string,
+  aspect: string,
+): Promise<"portrait" | "landscape" | null> {
+  const landscape = aspect === "16:9";
+  try {
+    for (const b64 of [firstB64, lastB64]) {
+      const meta = await new Bun.Image(Uint8Array.fromBase64(b64)).metadata();
+      if (!meta.width || !meta.height || meta.width === meta.height) continue;
+      const isLandscape = meta.width > meta.height;
+      if (isLandscape !== landscape) return isLandscape ? "landscape" : "portrait";
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /** Extend source: explicit GCS URI, chained output, on-disk bytes, inline bytes. */

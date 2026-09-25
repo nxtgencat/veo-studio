@@ -185,6 +185,43 @@ describe("async job flow", () => {
     }
   });
 
+  test("f2v aspect mismatch fails server-side", async () => {
+    const { encodePngRgba } = await import("../src/frames.ts");
+    const land = encodePngRgba(new Uint8Array(8 * 4 * 4).fill(10), 8, 4).toBase64();
+    const port = encodePngRgba(new Uint8Array(4 * 8 * 4).fill(10), 4, 8).toBase64();
+    const now = new Date().toISOString();
+    getDb()
+      .query("INSERT INTO elements (id, project_id, category, name, image_url, note, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("el_first", "prj_test", "frames", "First", `data:image/png;base64,${land}`, "", now);
+    getDb()
+      .query("INSERT INTO elements (id, project_id, category, name, image_url, note, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("el_last", "prj_test", "frames", "Last", `data:image/png;base64,${port}`, "", now);
+    setDriverForTests({
+      submit: async () => {
+        throw new Error("must not submit mismatched frames");
+      },
+      get: async () => ({ name: "operations/f2v", done: false, videoUris: [] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob(
+      {
+        projectId: "prj_test", mode: "f2v", model: "veo-3.1-generate-001", prompt: "x",
+        resolution: "720p", aspect: "16:9", durationSeconds: 8, audio: true,
+        sampleCount: 1, refAssetIds: [], firstFrameAssetId: "el_first", lastFrameAssetId: "el_last",
+      },
+      "key-f2v-aspect",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
+      await Bun.sleep(20);
+    }
+    expect((getJob(r.jobId) as any).status).toBe("failed");
+    expect((getJob(r.jobId) as any).error).toContain("FRAMES_ASPECT_MISMATCH");
+    setDriverForTests(null);
+  });
+
   test("missing auth fails job with actionable error", async () => {
     setDriverForTests(null);
     delete process.env.VERTEX_ACCESS_TOKEN;
