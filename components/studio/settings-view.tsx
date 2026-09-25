@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Check, KeyRound, LogOut, Moon, ShieldCheck, Sun, MonitorPlay } from "lucide-react";
+import { Check, KeyRound, LogOut, Moon, Sun, MonitorPlay } from "lucide-react";
 import { YT_CATS, YT_PRIVS } from "@/lib/catalog";
 import { rateFor } from "@/lib/pricing";
 import { ytCatLabel, ytConnect } from "@/lib/youtube";
@@ -40,8 +40,8 @@ export function SettingsView() {
   const [ytPriv, setYtPriv] = useState(project?.settings.ytPrivacy ?? "unlisted");
   const [ytCat, setYtCat] = useState(project?.settings.ytCategory ?? "22");
   const [ytBusy, setYtBusy] = useState(false);
-  const [connBusy, setConnBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [saBusy, setSaBusy] = useState(false);
+  const [bktBusy, setBktBusy] = useState(false);
 
   // Resync local editors when the server state arrives/changes.
   useEffect(() => {
@@ -54,21 +54,34 @@ export function SettingsView() {
   if (!project) return null;
   const connected = !!yt.token && yt.exp > Date.now();
 
-  const saveConn = () => {
-    if (connBusy) return;
-    setConnBusy(true);
-    setErr("");
-    void saveSettings({ saJson: sa, bucket: bucket.trim(), useBucket, authMode }).then(
+  const saveSa = () => {
+    if (saBusy) return;
+    setSaBusy(true);
+    void saveSettings({ saJson: sa, authMode }).then(
       () => {
-        push("Connection saved on server", { icon: "✓", detail: sa.trim() ? "Service account updated" : "Settings updated" });
+        push("Service account saved & verified", { icon: "✓", detail: sa.trim() ? "Key exchanged for a token successfully" : "Auth method updated" });
         setSa("");
       },
       (e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        setErr(msg);
-        push("Save failed", { icon: "!", tone: "danger", detail: msg.slice(0, 140) });
+        push("Service account save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
       },
-    ).finally(() => setConnBusy(false));
+    ).finally(() => setSaBusy(false));
+  };
+  const saveBucket = () => {
+    if (bktBusy) return;
+    setBktBusy(true);
+    void saveSettings({ bucket: bucket.trim(), useBucket }).then(
+      () => {
+        const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
+        push(
+          bucket.trim() ? "Bucket verified & saved" : "Bucket cleared",
+          { icon: "✓", detail: loc ? `Reachable · ${loc}` : bucket.trim() ? "Saved" : undefined },
+        );
+      },
+      (e) => {
+        push("Bucket save failed — kept previous value", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
+      },
+    ).finally(() => setBktBusy(false));
   };
   const saveYt = () => {
     void saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
@@ -76,29 +89,6 @@ export function SettingsView() {
       (e) => push("Save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
     );
   };
-  const validate = () => {
-    const msgs: string[] = [];
-    if (!sa.trim()) msgs.push("service-account JSON is empty");
-    else {
-      try {
-        const j = JSON.parse(sa);
-        if (j.type !== "service_account") msgs.push("JSON is valid but type ≠ service_account");
-        if (!j.client_email) msgs.push("missing client_email");
-        if (!j.private_key) msgs.push("missing private_key");
-      } catch (e) {
-        msgs.push("JSON does not parse: " + (e as Error).message);
-      }
-    }
-    if (!bucket.trim()) msgs.push("bucket is empty");
-    else if (!/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/.test(bucket.trim())) msgs.push("bucket name looks invalid");
-    setErr(msgs.join(" · "));
-    push(msgs.length ? "Validation found issues" : "Connection looks valid", {
-      icon: msgs.length ? "!" : "✓",
-      tone: msgs.length ? "danger" : "ok",
-      detail: msgs.length ? msgs.join(" · ") : "JSON parses · bucket format OK · region us-central1",
-    });
-  };
-
   const ytGo = async () => {
     if (ytBusy) return;
     setYtBusy(true);
@@ -200,7 +190,7 @@ export function SettingsView() {
         <div className="min-w-0 space-y-4">
         <SlateCard>
           <SlateCardHeader>
-            <h3 className="font-display font-bold text-[13.5px]">Google Cloud connection</h3>
+            <h3 className="font-display font-bold text-[13.5px]">Service account</h3>
             {authMode === "env" ? (
               <SlateBadge tone="info">Environment</SlateBadge>
             ) : serverSettings?.hasSaJson ? (
@@ -236,25 +226,38 @@ export function SettingsView() {
               <div>
                 <SlateLabel>Service account JSON {serverSettings?.hasSaJson ? <span className="text-muted font-normal">(blank = keep current)</span> : null}</SlateLabel>
                 <SlateTextarea className="font-mono !text-[11.5px]" rows={5} value={sa} onChange={(e) => setSa(e.target.value)} placeholder='{"type":"service_account","project_id":"…"}' />
-                <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span> + object access on your bucket. Stored server-side, never sent back.</p>
+                <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span>. The key is verified (token exchange) before saving, stored server-side, never sent back.</p>
               </div>
             )}
+            <div className="flex gap-2 flex-wrap">
+              <SlateButton variant="primary" size="sm" disabled={saBusy} onClick={saveSa}><Check className="size-3.5" /> {saBusy ? "Verifying…" : "Save & verify"}</SlateButton>
+            </div>
+          </div>
+        </SlateCard>
+        <SlateCard>
+          <SlateCardHeader>
+            <h3 className="font-display font-bold text-[13.5px]">Storage bucket</h3>
+            {project.settings.useBucket && project.settings.bucket ? (
+              <SlateBadge tone="ok">In use{serverSettings?.bucketLocation ? ` · ${serverSettings.bucketLocation}` : ""}</SlateBadge>
+            ) : (
+              <SlateBadge tone="draft">Off</SlateBadge>
+            )}
+          </SlateCardHeader>
+          <div className="p-4 space-y-4">
             <div>
-              <SlateLabel>Storage bucket ID</SlateLabel>
+              <SlateLabel>Bucket ID</SlateLabel>
               <SlateField className="font-mono !text-[12.5px]" value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="my-veo-output-12345" />
-              <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Vertex writes outputs here; Extend chains from bucket videos.</p>
+              <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Saved only if it exists and the service account can reach it. Vertex writes outputs here; Extend chains from bucket videos.</p>
             </div>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[13px] font-bold">Use bucket</p>
-                <p className="text-[11.5px] text-muted mt-0.5">Off = outputs return inline (not persisted), Extend unavailable.</p>
+                <p className="text-[11.5px] text-muted mt-0.5">On = outputs are saved to the bucket and generated videos stay extendable. Off = outputs return inline (not saved); Extend then works only for fresh uploads under 20 MB.</p>
               </div>
               <SlateToggle on={useBucket} label="Toggle bucket use" onFlip={() => setUseBucket((v) => !v)} />
             </div>
-            {err && <p className="text-[11.5px] text-[#C9432E]">{err}</p>}
             <div className="flex gap-2 flex-wrap">
-              <SlateButton variant="primary" size="sm" disabled={connBusy} onClick={saveConn}><Check className="size-3.5" /> {connBusy ? "Saving…" : "Save"}</SlateButton>
-              <SlateButton variant="ghost" size="sm" onClick={validate}><ShieldCheck className="size-3.5" /> Validate</SlateButton>
+              <SlateButton variant="primary" size="sm" disabled={bktBusy} onClick={saveBucket}><Check className="size-3.5" /> {bktBusy ? "Verifying…" : "Save & verify"}</SlateButton>
             </div>
           </div>
         </SlateCard>

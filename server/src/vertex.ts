@@ -21,13 +21,19 @@ export type VertexSubmitParams = {
   audio: boolean;
   sampleCount: number;
   seed?: number;
+  /** First-frame still (i2v, or the start of an f2v pair). */
   imageBytes?: string;
   imageMimeType?: string;
-  firstFrameBytes?: string;
+  /** End-frame still (f2v only). */
   lastFrameBytes?: string;
+  lastFrameMimeType?: string;
+  /** Subject/style references (r2v, up to 3, type asset). */
   referenceImages?: { bytes: string; mimeType: string }[];
   /** Extend source already in Cloud Storage. */
   sourceVideoGcsUri?: string;
+  /** Inline extend source (SDK-legal, fragile past a few MB — prefer GCS). */
+  sourceVideoBytes?: string;
+  sourceVideoMimeType?: string;
   /** gs://bucket/prefix/ — Vertex writes outputs here instead of returning bytes. */
   storageUri?: string;
 };
@@ -58,8 +64,25 @@ export async function vertexSubmit(params: VertexSubmitParams, ctx: VertexCtx): 
       mimeType: params.imageMimeType ?? "image/png",
     };
   }
+  if (params.lastFrameBytes) {
+    first.lastFrame = {
+      bytesBase64Encoded: params.lastFrameBytes,
+      mimeType: params.lastFrameMimeType ?? "image/png",
+    };
+  }
+  if (params.referenceImages?.length) {
+    first.referenceImages = params.referenceImages.map((r) => ({
+      image: { bytesBase64Encoded: r.bytes, mimeType: r.mimeType },
+      referenceType: "asset",
+    }));
+  }
   if (params.sourceVideoGcsUri) {
     first.video = { gcsUri: params.sourceVideoGcsUri, mimeType: "video/mp4" };
+  } else if (params.sourceVideoBytes) {
+    first.video = {
+      bytesBase64Encoded: params.sourceVideoBytes,
+      mimeType: params.sourceVideoMimeType ?? "video/mp4",
+    };
   }
   const parameters: Record<string, unknown> = {
     aspectRatio: params.aspectRatio,

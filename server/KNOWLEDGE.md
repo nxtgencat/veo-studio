@@ -83,12 +83,39 @@ sites is a crop, not native).
   the same `extend` task — we disable Extend for Veo 2).
 - Aspect 16:9/9:16. 24fps.
 
+## 3b. Image-input limits (all slots)
+
+Counts per request — slots are mutually exclusive (one slot only, enforced
+as `MIXED_INPUTS`):
+
+| Slot | Max | Mode |
+|---|---|---|
+| image (first frame) | 1 | Image-to-video |
+| image + lastFrame | 2 (start + end pair) | Frames-to-video |
+| referenceImages | 3 asset (3.1/3.1 Fast, Veo 2) | Reference-to-video |
+| video | 1 (GCS URI recommended, Base64 ≤20 MB) | Extend |
+
+Per-image: **≤20 MB each**, **JPEG/PNG only** (magic-byte sniffed, not just
+Content-Type). Inline uploads are inspected at element creation
+(`E_IMAGE_TYPE`/`E_IMAGE_TOO_LARGE`); remote URLs are fetched with a hard
+cap and sniffed at submit time. Frames pairing: both stills should share the
+requested output aspect (client pre-check; mismatches fail or get cropped).
+References should depict the same subject — conflicting images dilute
+identity (guidance, not verifiable). R2V duration lock (8 s only) and
+sampleCount 1–4 per mode already in §3.
+
 ## 4. Extend rules (strict)
 
 Official extend-video docs (Agent Platform):
 
 - Input: **MP4**, **1–30s** long, **24fps**, resolution **720p/1080p/4K**,
-  aspect **16:9 or 9:16**, supplied as GCS URI (`gcsUri`) or inline bytes.
+  aspect **16:9 or 9:16**. Two accepted shapes (mirrors the GenAI SDK
+  `Video` type): **GCS URI (recommended)** — `video: {gcsUri, mimeType}` —
+  and **inline Base64 bytes** — `video: {bytesBase64Encoded, mimeType}` —
+  capped at 20 MB like input images. Older REST reports of bytes being
+  rejected in the video object appear version-dependent; the current SDK
+  accepts both, with URI strongly preferred past a few MB (Base64 JSON
+  payloads get fragile). Our server resolves GCS first, bytes second.
 - Output: **exactly +7s** appended per call.
 - Total cap: **37s for Veo**, 40s for Gemini Omni Flash. Chaining extend
   calls is how >8s films are built (Flow Scene Builder does the same).
@@ -123,6 +150,13 @@ Official extend-video docs (Agent Platform):
   URIs: an explicit `sourceVideoGcsUri` or a previous bucket output).
   With the bucket off, outputs return inline and Extend is unavailable
   (`EXTEND_NEEDS_GCS`).
+- **Bucket validation (before save):** a bucket ID is checked with
+  `testIamPermissions` for `storage.objects.get/list` — the SA needs
+  **Storage Object User** (`roles/storage.objectUser`: object read+write,
+  no bucket admin), which is enough. A plain metadata GET is deliberately
+  NOT the gate, since Object User lacks `storage.buckets.get`.
+  Vertex's own service agent separately needs Storage Object Creator for
+  outputs; unreachable/missing buckets map to `E_BUCKET_*` and are never saved.
 - Regions: Veo serves from **`us-central1`** (set `VERTEXAI_LOCATION` to change).
   Server stores `region` per job, defaults `us-central1`.
 - Quotas (per project, per base model, per minute, per region):

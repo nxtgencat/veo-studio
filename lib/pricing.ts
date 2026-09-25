@@ -100,6 +100,26 @@ export function validateGen(
   lib: VideoItem[],
 ): string | null {
   if (!g.prompt.trim()) return "Write a prompt first.";
+  // Slots are mutually exclusive — flag stale inputs carried over from another mode.
+  const hasImage = !!g.image;
+  const hasFrames = !!g.first || !!g.last;
+  const hasRefs = g.refs.filter(Boolean).length > 0;
+  const hasVideo = !!g.extendVideo;
+  if (g.mode === "t2v" && (hasImage || hasFrames || hasRefs || hasVideo)) {
+    return "Text mode takes a prompt only — clear the image/frame/reference/video slots first.";
+  }
+  if (g.mode === "i2v" && (hasFrames || hasRefs || hasVideo)) {
+    return "Image mode takes one still — clear the frames/reference/video slots first.";
+  }
+  if (g.mode === "frames" && (hasImage || hasRefs || hasVideo)) {
+    return "Frames mode takes first + last only — clear the image/reference/video slots first.";
+  }
+  if (g.mode === "r2v" && (hasImage || hasFrames || hasVideo)) {
+    return "Reference mode takes references only — clear the image/frame/video slots first.";
+  }
+  if (g.mode === "extend" && (hasImage || hasFrames || hasRefs)) {
+    return "Extend takes a source video only — clear the image/frame/reference slots first.";
+  }
   if (g.mode === "i2v" && !g.image) return "Image mode needs 1 image.";
   if (g.mode === "frames" && (!g.first || !g.last)) return "Frames mode needs first + last frame.";
   if (g.mode === "r2v") {

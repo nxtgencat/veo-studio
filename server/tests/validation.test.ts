@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateJob, type JobInput } from "../src/validation.ts";
+import { jobInputSchema, validateJob, type JobInput } from "../src/validation.ts";
 
 const base: JobInput = {
   projectId: "prj_1",
@@ -90,8 +90,42 @@ describe("validation", () => {
     expect(ok).toBeNull();
   });
 
+  test("extend accepts gs:// URI or inline bytes, rejects other URIs", () => {
+    const base: JobInput = {
+      projectId: "p",
+      mode: "extend",
+      model: "veo-3.1-generate-001",
+      prompt: "x",
+      resolution: "720p",
+      aspect: "16:9",
+      durationSeconds: 7,
+      audio: true,
+      sampleCount: 1,
+      refAssetIds: [],
+      sourceVideoId: "v",
+      sourceResolution: "720p",
+    };
+    expect(validateJob({ ...base, sourceVideoGcsUri: "gs://b/v.mp4" })).toBeNull();
+    expect(validateJob({ ...base, sourceVideoBytes: "AAA" })).toBeNull();
+    // Non-gs:// URIs fail zod schema parsing (caught as VALIDATION at the route).
+    expect(jobInputSchema.safeParse({ ...base, sourceVideoGcsUri: "https://x/v.mp4" }).success).toBe(false);
+  });
+
   test("extend duration fixed at 7s", () => {
-    const r = validateJob({ ...base, mode: "extend", durationSeconds: 8, sourceVideoId: "v" });
+    const base: JobInput = {
+      projectId: "p",
+      mode: "extend",
+      model: "veo-3.1-generate-001",
+      prompt: "x",
+      resolution: "720p",
+      aspect: "16:9",
+      durationSeconds: 8,
+      audio: true,
+      sampleCount: 1,
+      refAssetIds: [],
+      sourceVideoId: "v",
+    };
+    const r = validateJob(base);
     expect(r?.code).toBe("EXTEND_DURATION_FIXED");
   });
 
@@ -125,6 +159,33 @@ describe("validation", () => {
       sourceVideoId: "v",
     });
     expect(r?.code).toBe("MODE_UNSUPPORTED");
+  });
+
+  test("slots are mutually exclusive per mode", () => {
+    const t2v: JobInput = {
+      projectId: "p", mode: "t2v", model: "veo-3.1-generate-001", prompt: "x",
+      resolution: "720p", aspect: "16:9", durationSeconds: 8, audio: true,
+      sampleCount: 1, refAssetIds: ["r1"],
+    };
+    expect(validateJob(t2v)?.code).toBe("MIXED_INPUTS");
+    const i2v: JobInput = {
+      projectId: "p", mode: "i2v", model: "veo-3.1-generate-001", prompt: "x",
+      resolution: "720p", aspect: "16:9", durationSeconds: 8, audio: true,
+      sampleCount: 1, refAssetIds: ["r1"], imageAssetId: "img",
+    };
+    expect(validateJob(i2v)?.code).toBe("MIXED_INPUTS");
+    const r2v: JobInput = {
+      projectId: "p", mode: "r2v", model: "veo-3.1-generate-001", prompt: "x",
+      resolution: "720p", aspect: "16:9", durationSeconds: 8, audio: true,
+      sampleCount: 1, refAssetIds: ["r1"], imageAssetId: "img",
+    };
+    expect(validateJob(r2v)?.code).toBe("MIXED_INPUTS");
+    const clean: JobInput = {
+      projectId: "p", mode: "r2v", model: "veo-3.1-generate-001", prompt: "x",
+      resolution: "720p", aspect: "16:9", durationSeconds: 8, audio: true,
+      sampleCount: 1, refAssetIds: ["r1"],
+    };
+    expect(validateJob(clean)).toBeNull();
   });
 
   test("r2v forces 8s", () => {

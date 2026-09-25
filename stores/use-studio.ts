@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { api } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
+import { imageDims } from "@/lib/media";
 import type {
   ElementCat,
   ElementItem,
@@ -193,7 +194,7 @@ interface StudioState {
   activeProject: () => Project | undefined;
   updateActive: (fn: (draft: Project) => void) => { ok: boolean; error?: string };
   queueGeneration: () => Promise<{ ok: boolean; error?: string; count?: number }>;
-  importVideo: (a: { prompt: string; res: string; aspect: string; dur: number; thumbDataUrl: string; blobUrl: string }) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  importVideo: (a: { prompt: string; res: string; aspect: string; dur: number; thumbDataUrl: string; blobUrl: string; sourceBytes?: string; sourceMime?: string }) => Promise<{ ok: boolean; error?: string; id?: string }>;
   deleteVideo: (id: string) => Promise<void>;
   createProject: (name: string) => Promise<string>;
   renameProject: (id: string, name: string) => Promise<void>;
@@ -259,6 +260,9 @@ function buildProjects(
 export const useStudio = create<StudioState>()((set, get) => {
   let local = loadLocal();
   let blobUrls: Record<string, string> = {};
+  // Raw upload bytes for direct (non-GCS) extend, keyed by library id.
+  // Session-only and capped at 20 MB — GCS chaining stays the default.
+  let uploadBytes: Record<string, { bytes: string; mime: string }> = {};
   const loaded = new Set<string>();
 
   const persist = () => saveLocal(local);
@@ -273,13 +277,18 @@ export const useStudio = create<StudioState>()((set, get) => {
     e instanceof Error ? e.message : String(e ?? "Request failed");
 
   async function fetchScope(projectId: string) {
-    const [els, libs, jobs, cfg] = await Promise.all([
+    const [els, libs, jobs, cfgResp] = await Promise.all([
       api.listElements(projectId),
       api.listLibrary(projectId),
       api.listJobs(projectId),
       api.getSettings(projectId),
     ]);
     const s = get();
+    const prevCfg = s.srvSettings[projectId];
+    const cfg: ServerSettings = {
+      ...cfgResp,
+      bucketLocation: cfgResp.bucketLocation ?? prevCfg?.bucketLocation ?? null,
+    };
     set({
       elements: [...s.elements.filter((e) => e.project_id !== projectId), ...els.elements],
       library: [...s.library.filter((v) => v.project_id !== projectId), ...libs.videos],
@@ -410,6 +419,20 @@ export const useStudio = create<StudioState>()((set, get) => {
       );
       if (validation) return { ok: false, error: validation };
 
+      // Frames pairing: both stills should match the requested output aspect.
+      if (g.mode === "frames") {
+        const [a, b] = await Promise.all([imageDims(g.first), imageDims(g.last)]);
+        const landscape = g.aspect === "16:9";
+        const bad =
+          (a && (landscape ? a.w < a.h : a.w > a.h)) || (b && (landscape ? b.w < b.h : b.w > b.h));
+        if (bad) {
+          return {
+            ok: false,
+            error: `Both frames should be ${g.aspect} like the output — one still looks ${landscape ? "portrait" : "landscape"} (it would fail or get cropped).`,
+          };
+        }
+      }
+
       const resolveAsset = async (img: string, category: string, label: string): Promise<string> => {
         const hit = get().elements.find((e) => e.project_id === p.id && e.image_url === img);
         if (hit) return hit.id;
@@ -459,6 +482,13 @@ export const useStudio = create<StudioState>()((set, get) => {
             base.sourceAspect = s.aspect;
             base.sourceDurationSeconds = s.dur;
           }
+          // Direct path: uploaded file bytes go inline (SDK-legal, ≤20 MB).
+          // GCS-chained sources skip this via resolveExtendSource server-side.
+          const up = uploadBytes[g.extendVideo];
+          if (up) {
+            base.sourceVideoBytes = up.bytes;
+            base.sourceVideoMimeType = up.mime;
+          }
         }
         let count = 0;
         for (let i = 0; i < (g.batch || 1); i++) {
@@ -486,6 +516,7 @@ export const useStudio = create<StudioState>()((set, get) => {
           thumbDataUrl: a.thumbDataUrl,
         });
         if (a.blobUrl) blobUrls[id] = a.blobUrl;
+        if (a.sourceBytes) uploadBytes[id] = { bytes: a.sourceBytes, mime: a.sourceMime ?? "video/mp4" };
         await get().refreshActive();
         return { ok: true, id };
       } catch (e) {
@@ -509,6 +540,7 @@ export const useStudio = create<StudioState>()((set, get) => {
         }
       }
       delete blobUrls[id];
+      delete uploadBytes[id];
       await get().refreshActive();
     },
 
@@ -623,7 +655,22 @@ export const useStudio = create<StudioState>()((set, get) => {
       if (authMode !== undefined) serverPatch.authMode = authMode;
       if (Object.keys(serverPatch).length > 0) {
         const saved = await api.saveSettings(id, serverPatch);
-        set({ srvSettings: { ...get().srvSettings, [id]: saved } });
+        const prev = get().srvSettings[id];
+        set({
+          srvSettings: {
+            ...get().srvSettings,
+            [id]: {
+              projectId: saved.projectId,
+              bucket: saved.bucket,
+              useBucket: saved.useBucket,
+              authMode: saved.authMode,
+              hasSaJson: saved.hasSaJson,
+              saEmail: saved.saEmail,
+              saProjectId: saved.saProjectId,
+              bucketLocation: saved.bucketCheck?.location ?? saved.bucketLocation ?? prev?.bucketLocation ?? null,
+            },
+          },
+        });
       }
       if (Object.keys(ytPatch).length > 0) {
         local.settings[id] = { ...(local.settings[id] ?? defaultSettings()), ...ytPatch };

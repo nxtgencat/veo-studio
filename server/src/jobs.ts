@@ -5,6 +5,7 @@
 import { getDb, nowIso } from "./db.ts";
 import { getModel } from "./capabilities.ts";
 import { getSettings, resolveAuth } from "./auth.ts";
+import { elementImageBytes } from "./images.ts";
 import { estimateCost } from "./pricing.ts";
 import { validateJob, type JobInput } from "./validation.ts";
 import { childLogger } from "./logger.ts";
@@ -55,6 +56,10 @@ export type CreateResult =
   | { ok: true; jobId: string; deduped: boolean }
   | { ok: false; code: string; message: string; details?: unknown };
 
+// Inline extend bytes ride in memory only (never persisted to sqlite):
+// large Base64 blobs don't belong in job rows or provenance records.
+const pendingBytes = new Map<string, { bytes: string; mime: string }>();
+
 export function createJob(input: JobInput, idempotencyKey: string): CreateResult {
   const db = getDb();
   if (!idempotencyKey) {
@@ -90,6 +95,7 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
     refAssetIds: input.refAssetIds,
     sourceVideoId: input.sourceVideoId,
     sourceVideoGcsUri: input.sourceVideoGcsUri,
+    hasSourceVideoBytes: !!input.sourceVideoBytes,
     seed: input.seed,
   };
   db.query(
@@ -104,6 +110,9 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
     cost, input.webhookUrl ?? "", now, now,
   );
   log.info({ jobId: id, mode: input.mode, model: input.model, cost }, "job created");
+  if (input.mode === "extend" && input.sourceVideoBytes) {
+    pendingBytes.set(id, { bytes: input.sourceVideoBytes, mime: input.sourceVideoMimeType ?? "video/mp4" });
+  }
   void runInBackground(id);
   return { ok: true, jobId: id, deduped: false };
 }
@@ -138,18 +147,57 @@ async function runInBackground(jobId: string) {
       // Vertex writes output files straight to the bucket.
       params.storageUri = `gs://${settings.bucket}/veo/`;
     }
+    if (row.mode === "i2v" || row.mode === "f2v" || row.mode === "r2v") {
+      // Resolve element IDs to transmittable bytes (≤20 MB JPEG/PNG each).
+      const inputs = JSON.parse(row.inputs_json || "{}") as {
+        imageAssetId?: string;
+        firstFrameAssetId?: string;
+        lastFrameAssetId?: string;
+        refAssetIds?: string[];
+      };
+      const need = [
+        inputs.imageAssetId,
+        inputs.firstFrameAssetId,
+        inputs.lastFrameAssetId,
+        ...(inputs.refAssetIds ?? []),
+      ].filter(Boolean) as string[];
+      const seen = new Map<string, { base64: string; mime: string }>();
+      for (const id of need) {
+        if (!seen.has(id)) seen.set(id, await elementImageBytes(id, row.project_id));
+      }
+      const get = (id?: string) => (id ? seen.get(id) : undefined);
+      const first = get(inputs.imageAssetId ?? inputs.firstFrameAssetId);
+      if (first) {
+        params.imageBytes = first.base64;
+        params.imageMimeType = first.mime;
+      }
+      const last = get(inputs.lastFrameAssetId);
+      if (last) {
+        params.lastFrameBytes = last.base64;
+        params.lastFrameMimeType = last.mime;
+      }
+      const refs = (inputs.refAssetIds ?? [])
+        .map((id) => seen.get(id))
+        .filter((x): x is { base64: string; mime: string } => !!x);
+      if (refs.length) {
+        params.referenceImages = refs.map((r) => ({ bytes: r.base64, mimeType: r.mime }));
+      }
+    }
     if (row.mode === "extend") {
-      const gcs = resolveExtendSource(row);
-      if (!gcs) {
+      const src = resolveExtendSource(row);
+      if (!src) {
         failJob(
           jobId,
-          "EXTEND_NEEDS_GCS: extend requires the source video in Cloud Storage. " +
-            "Enable the bucket in Settings (previous outputs then chain automatically) " +
-            "or pass sourceVideoGcsUri (gs://…) explicitly.",
+          "EXTEND_NEEDS_SOURCE: extend needs the source video as sourceVideoGcsUri (gs://…, recommended) " +
+            "or inline sourceVideoBytes (≤20 MB). A library sourceVideoId only works when its video_url is gs://.",
         );
         return;
       }
-      params.sourceVideoGcsUri = gcs;
+      if (src.gcsUri) params.sourceVideoGcsUri = src.gcsUri;
+      else {
+        params.sourceVideoBytes = src.bytes;
+        params.sourceVideoMimeType = src.mime;
+      }
     }
     const opName = await d.submit(params);
     db.query("UPDATE jobs SET vertex_operation=?, progress=15, updated_at=? WHERE id=?").run(
@@ -175,14 +223,19 @@ function authErrorHint(projectId: string): string {
   }
 }
 
-/** Extend source must live in GCS: explicit URI, or a previous bucket output. */
-function resolveExtendSource(row: any): string | null {
+/** Extend source: explicit GCS URI, chained bucket output, or inline bytes. */
+function resolveExtendSource(row: any): { gcsUri?: string; bytes?: string; mime?: string } | null {
   try {
     const inputs = JSON.parse(row.inputs_json || "{}") as { sourceVideoGcsUri?: string; sourceVideoId?: string };
-    if (inputs.sourceVideoGcsUri?.startsWith("gs://")) return inputs.sourceVideoGcsUri;
+    if (inputs.sourceVideoGcsUri?.startsWith("gs://")) return { gcsUri: inputs.sourceVideoGcsUri };
+    const inline = pendingBytes.get(row.id);
+    if (inline) {
+      pendingBytes.delete(row.id);
+      return { bytes: inline.bytes, mime: inline.mime };
+    }
     if (inputs.sourceVideoId) {
       const src = getDb().query("SELECT video_url FROM library WHERE id=?").get(inputs.sourceVideoId) as { video_url: string } | null;
-      if (src?.video_url?.startsWith("gs://")) return src.video_url;
+      if (src?.video_url?.startsWith("gs://")) return { gcsUri: src.video_url };
     }
   } catch { /* fall through */ }
   return null;

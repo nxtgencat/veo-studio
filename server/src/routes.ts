@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { getDb, nowIso } from "./db.ts";
-import { getSettings, parseSaJson, saveSettings } from "./auth.ts";
+import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
+import { checkBucket } from "./gcs.ts";
+import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -89,6 +91,17 @@ app.post("/projects/:id/elements", async (c) => {
   }
   const parsed = elementSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid element", zodDetails(parsed.error));
+  // Inline uploads are inspected now (remote URLs are checked at submit time):
+  // JPEG/PNG only, ≤20 MB each.
+  const inline = parseDataUrl(parsed.data.imageUrl);
+  if (inline) {
+    if (!isAllowedImageMime(inline.mime) || !sniffImageMime(inline.bytes)) {
+      return err(c, 422, "E_IMAGE_TYPE", `Element image must be JPEG or PNG, got ${inline.mime || "unknown"}`);
+    }
+    if (inline.bytes.length > IMAGE_MAX_BYTES) {
+      return err(c, 422, "E_IMAGE_TOO_LARGE", "Element image exceeds 20 MB");
+    }
+  }
   const id = Bun.randomUUIDv7();
   const now = nowIso();
   db.query(
@@ -115,6 +128,13 @@ app.patch("/elements/:id", async (c) => {
   const name = typeof body.name === "string" && body.name ? body.name : row.name;
   const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : row.image_url;
   const note = typeof body.note === "string" ? body.note : row.note;
+  const inlinePatch = parseDataUrl(imageUrl);
+  if (inlinePatch && (!isAllowedImageMime(inlinePatch.mime) || !sniffImageMime(inlinePatch.bytes))) {
+    return err(c, 422, "E_IMAGE_TYPE", `Element image must be JPEG or PNG, got ${inlinePatch.mime || "unknown"}`);
+  }
+  if (inlinePatch && inlinePatch.bytes.length > IMAGE_MAX_BYTES) {
+    return err(c, 422, "E_IMAGE_TOO_LARGE", "Element image exceeds 20 MB");
+  }
   db.query("UPDATE elements SET name=?, image_url=?, note=? WHERE id=?").run(name, imageUrl, note, row.id);
   return c.json({ ...row, name, image_url: imageUrl, note });
 });
@@ -149,6 +169,7 @@ app.get("/projects/:id/settings", (c) => {
     hasSaJson: !!s.saJson.trim(),
     saEmail,
     saProjectId,
+    bucketLocation: null as string | null,
   });
 });
 
@@ -166,6 +187,14 @@ app.patch("/projects/:id/settings", async (c) => {
   }
   const parsed = settingsSchema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid settings", zodDetails(parsed.error));
+  // Live verification BEFORE anything is saved: a new key must mint a token,
+  // and a bucket ID must exist and be reachable with the effective credentials.
+  // Only valid, reachable config persists.
+  try {
+    await verifySettingsLive(pid, parsed.data);
+  } catch (e: any) {
+    return err(c, 422, e?.code ?? "SETTINGS_INVALID", e?.message ?? "Invalid settings");
+  }
   try {
     saveSettings(pid, parsed.data);
   } catch (e: any) {
@@ -173,8 +202,50 @@ app.patch("/projects/:id/settings", async (c) => {
   }
   logger.info({ projectId: pid, authMode: parsed.data.authMode, useBucket: parsed.data.useBucket }, "project settings saved");
   const res = await app.request(`/projects/${pid}/settings`);
-  return c.json(await res.json());
+  const body = (await res.json()) as Record<string, unknown>;
+  return c.json({ ...body, bucketCheck: lastBucketCheck.get(pid) ?? null, bucketLocation: lastBucketCheck.get(pid)?.location ?? null });
 });
+
+/**
+ * Mint a token for a fresh key and check bucket reachability with the
+ * effective credentials. Throws coded errors; saves nothing.
+ */
+const lastBucketCheck = new Map<string, { location: string } | null>();
+
+async function verifySettingsLive(
+  projectId: string,
+  patch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" },
+): Promise<void> {
+  const stored = getSettings(projectId);
+  const authMode = patch.authMode ?? stored.authMode;
+  // Effective key: fresh paste wins, otherwise the stored one.
+  let sa: SaCreds | null = null;
+  if (patch.saJson !== undefined && patch.saJson.trim()) {
+    sa = parseSaJson(patch.saJson);
+    // Prove the key works before saving it.
+    await saAccessToken(sa);
+  } else if (authMode === "service_account" && stored.saJson.trim()) {
+    sa = parseSaJson(stored.saJson);
+  }
+  // Effective token for the bucket check.
+  let token: string | null = null;
+  if (sa) token = await saAccessToken(sa);
+  else if (authMode === "env") token = process.env.VERTEX_ACCESS_TOKEN ?? null;
+
+  const bucket = patch.bucket !== undefined ? patch.bucket.trim() : stored.bucket;
+  if (patch.bucket !== undefined && bucket) {
+    if (!token) {
+      throw Object.assign(
+        new Error("Cannot verify bucket with no credentials — save a service account first"),
+        { code: "E_SA_MISSING" },
+      );
+    }
+    const check = await checkBucket(bucket, token);
+    lastBucketCheck.set(projectId, { location: check.location });
+  } else if (patch.bucket !== undefined) {
+    lastBucketCheck.set(projectId, null);
+  }
+}
 
 // ---------- composer / jobs ----------
 app.post("/composer/jobs", async (c) => {

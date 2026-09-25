@@ -7,7 +7,7 @@ import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "luci
 import { money } from "@/lib/format";
 import { ago, fullTs } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
-import { captureVideo } from "@/lib/media";
+import { captureVideo, fileToBase64 } from "@/lib/media";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
@@ -50,6 +50,7 @@ export function LibraryView() {
     push("Importing video…", { icon: "↑" });
     try {
       const { url, thumb, meta } = await captureVideo(file);
+      const raw = await fileToBase64(file).catch(() => null);
       const r = await importVideo({
         prompt: (file.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
         res: meta.res,
@@ -57,6 +58,7 @@ export function LibraryView() {
         dur: meta.dur,
         thumbDataUrl: thumb,
         blobUrl: url,
+        ...(raw ? { sourceBytes: raw.bytes, sourceMime: raw.mime } : {}),
       });
       if (!r.ok) push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
       else push("Video imported to Library", { icon: "✓" });

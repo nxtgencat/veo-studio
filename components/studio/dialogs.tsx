@@ -9,7 +9,7 @@ import {
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
 import { ago, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
-import { captureAt, captureVideo, fileToImage } from "@/lib/media";
+import { captureAt, captureVideo, fileToBase64, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
 import { ytConnect, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
@@ -186,6 +186,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
           setBusy(true);
           captureVideo(f)
             .then(async ({ url, thumb, meta }) => {
+              const raw = await fileToBase64(f).catch(() => null);
               const r = await importVideo({
                 prompt: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
                 res: meta.res,
@@ -193,6 +194,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
                 dur: meta.dur,
                 thumbDataUrl: thumb,
                 blobUrl: url,
+                ...(raw ? { sourceBytes: raw.bytes, sourceMime: raw.mime } : {}),
               });
               if (!r.ok || !r.id) {
                 push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
@@ -200,7 +202,15 @@ function VideoPickerDialog({ close }: { close: () => void }) {
               }
               updateActive((d) => { d.gen.extendVideo = r.id as string; });
               close();
-              push(meta.dur > 30 ? `Imported — but ${meta.dur}s is too long to extend (≤30s)` : "Imported and selected as extend source", { icon: "✓" });
+              const tooBig = f.size > INLINE_VIDEO_MAX;
+              push(
+                meta.dur > 30
+                  ? `Imported — but ${meta.dur}s is too long to extend (≤30s)`
+                  : tooBig
+                    ? "Imported and selected — file is over 20MB, extend needs a GCS source for it"
+                    : "Imported and selected as extend source",
+                { icon: "✓" },
+              );
             })
             .catch(() => push("Could not read that video", { icon: "!", tone: "danger" }))
             .finally(() => setBusy(false));
@@ -538,7 +548,6 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
   const [privacy, setPrivacy] = useState(saved.privacy || project?.settings.ytPrivacy || "unlisted");
   const [busy, setBusy] = useState(false);
   const [pct, setPct] = useState(saved.pct || 0);
-  const [err, setErr] = useState("");
   const [info, setInfo] = useState<typeof saved | null>(saved.videoId ? saved : null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -578,7 +587,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
           }
           if (["failed", "terminated"].includes(patch.processingStatus) || ["failed", "rejected"].includes(patch.uploadStatus)) {
             if (pollRef.current) clearInterval(pollRef.current);
-            setErr(patch.fail || "YouTube processing failed.");
+            push("YouTube processing failed", { icon: "!", tone: "danger", detail: (patch.fail || "").slice(0, 160) });
           }
         })
         .catch(() => {});
@@ -622,15 +631,14 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
   const start = async () => {
     if (busy) return;
     if (!v.url) {
-      setErr("No playable file — re-upload this video first (blob URLs die on reload).");
+      push("No playable file — re-upload this video first (blob URLs die on reload).", { icon: "!", tone: "danger" });
       return;
     }
     const parsed = ytPublishSchema.safeParse({ title, description: desc, privacy });
     if (!parsed.success) {
-      setErr(parsed.error.issues[0]?.message ?? "Invalid input");
+      push(parsed.error.issues[0]?.message ?? "Invalid input", { icon: "!", tone: "danger" });
       return;
     }
-    setErr("");
     setBusy(true);
     setPct(0);
     try {
@@ -663,7 +671,6 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       poll(id);
     } catch (e) {
       const msg = String((e as Error).message || e).slice(0, 220);
-      setErr(msg);
       saveYt({ state: "error", fail: msg });
       push("YouTube upload failed", { icon: "!", tone: "danger", detail: msg.slice(0, 120) });
     } finally {
@@ -747,7 +754,6 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
             <SlateProgress value={pct} />
           </div>
         )}
-        {err && <p className="text-[12px] font-mono break-words p-2.5 rounded-[8px]" style={{ background: "var(--t-danger-bg)", color: "var(--t-danger-fg)" }}>{err}</p>}
         <div className="flex gap-2 justify-end flex-wrap">
           <SlateButton variant="ghost" onClick={close}>{info?.videoId ? "Close" : "Cancel"}</SlateButton>
           <SlateButton variant="primary" disabled={busy} onClick={start}>

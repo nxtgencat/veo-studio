@@ -95,6 +95,34 @@ describe("async job flow", () => {
     setDriverForTests(null);
   });
 
+  test("i2v submit carries resolved image bytes", async () => {
+    const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const now = new Date().toISOString();
+    getDb()
+      .query("INSERT INTO elements (id, project_id, category, name, image_url, note, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("el_still", "prj_test", "frames", "Still", `data:image/png;base64,${PNG_1PX}`, "", now);
+    let seen: any = null;
+    setDriverForTests({
+      submit: async (p) => {
+        seen = p;
+        return "operations/i2v";
+      },
+      get: async () => ({ name: "operations/i2v", done: true, videoUris: [] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob({ ...base, mode: "i2v", imageAssetId: "el_still" }, "key-i2v");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
+      await Bun.sleep(20);
+    }
+    expect((getJob(r.jobId) as any).status).toBe("succeeded");
+    expect(seen?.imageBytes).toBe(PNG_1PX);
+    expect(seen?.imageMimeType).toBe("image/png");
+    setDriverForTests(null);
+  });
+
   test("missing auth fails job with actionable error", async () => {
     setDriverForTests(null);
     delete process.env.VERTEX_ACCESS_TOKEN;
@@ -146,7 +174,49 @@ describe("async job flow", () => {
       await Bun.sleep(20);
     }
     expect((getJob(r.jobId) as any).status).toBe("failed");
-    expect((getJob(r.jobId) as any).error).toContain("EXTEND_NEEDS_GCS");
+    expect((getJob(r.jobId) as any).error).toContain("EXTEND_NEEDS_SOURCE");
+    setDriverForTests(null);
+  });
+
+  test("extend with inline bytes submits video bytes", async () => {
+    let seen: any = null;
+    setDriverForTests({
+      submit: async (p) => {
+        seen = p;
+        return "operations/ext-bytes";
+      },
+      get: async () => ({ name: "operations/ext-bytes", done: true, videoUris: [] }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob(
+      {
+        projectId: "prj_test",
+        mode: "extend",
+        model: "veo-3.1-generate-001",
+        prompt: "continue",
+        resolution: "720p",
+        aspect: "16:9",
+        durationSeconds: 7,
+        audio: true,
+        sampleCount: 1,
+        refAssetIds: [],
+        sourceVideoId: "vid_missing",
+        sourceResolution: "720p",
+        sourceVideoBytes: "AAAABBBB",
+        sourceVideoMimeType: "video/mp4",
+      },
+      "key-ext-bytes",
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
+      await Bun.sleep(20);
+    }
+    expect((getJob(r.jobId) as any).status).toBe("succeeded");
+    expect(seen).toBeTruthy();
+    expect(seen.sourceVideoBytes).toBe("AAAABBBB");
+    expect(seen.sourceVideoGcsUri).toBeUndefined();
     setDriverForTests(null);
   });
 });

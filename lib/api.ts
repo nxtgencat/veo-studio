@@ -75,6 +75,7 @@ export interface ServerSettings {
   hasSaJson: boolean;
   saEmail: string | null;
   saProjectId: string | null;
+  bucketLocation: string | null;
 }
 
 export const api = {
@@ -91,7 +92,7 @@ export const api = {
 
   getSettings: (projectId: string) => req<ServerSettings>(`/projects/${projectId}/settings`),
   saveSettings: (projectId: string, body: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" }) =>
-    req<ServerSettings>(`/projects/${projectId}/settings`, { method: "PATCH", body: JSON.stringify(body) }),
+    req<ServerSettings & { bucketCheck?: { location: string } | null }>(`/projects/${projectId}/settings`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listElements: (projectId: string) =>
     req<{ elements: ServerElement[] }>(`/projects/${projectId}/elements`),

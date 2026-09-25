@@ -27,6 +27,34 @@ export function fileToImage(file: File, maxDim = 768): Promise<string> {
   });
 }
 
+/** Max raw video bytes sent inline for direct extend (mirrors server cap). */
+export const INLINE_VIDEO_MAX = 20 * 1024 * 1024;
+
+/** Read a file as bare Base64 (no data: prefix). Null when over the cap. */
+export function fileToBase64(file: File): Promise<{ bytes: string; mime: string } | null> {
+  if (file.size > INLINE_VIDEO_MAX) return Promise.resolve(null);
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result ?? "");
+      const i = s.indexOf(",");
+      res({ bytes: i >= 0 ? s.slice(i + 1) : s, mime: file.type || "video/mp4" });
+    };
+    r.onerror = () => rej(new Error("bad file"));
+    r.readAsDataURL(file);
+  });
+}
+
+/** Read still dimensions (for the frames-aspect pre-check). Null when unreadable. */
+export function imageDims(url: string): Promise<{ w: number; h: number } | null> {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => res({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height });
+    img.onerror = () => res(null);
+    img.src = url;
+  });
+}
+
 export function captureAt(url: string, t: number | null): Promise<string> {
   return new Promise((resolve, reject) => {
     const v = document.createElement("video");

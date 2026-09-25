@@ -25,6 +25,10 @@ export const jobInputSchema = z.object({
   refAssetIds: z.array(z.string()).max(3).default([]),
   sourceVideoId: z.string().optional(),
   sourceVideoGcsUri: z.string().regex(/^gs:\/\/[^/]+\/.+/, "must be a gs://bucket/object URI").optional(),
+  // Inline source bytes: schema-legal per the GenAI SDK Video type, but Base64
+  // inflates ~33% — capped at 20 MB like input images. Prefer GCS for real clips.
+  sourceVideoBytes: z.string().max(28_000_000).optional(),
+  sourceVideoMimeType: z.string().max(100).optional(),
   sourceDurationSeconds: z.number().optional(),
   sourceResolution: z.string().optional(),
   sourceAspect: z.string().optional(),
@@ -83,6 +87,58 @@ export function validateJob(input: JobInput): ValidationError | null {
   }
 
   // Mode-specific input requirements
+  // Slots are mutually exclusive (one slot per request): image | first+last |
+  // references | video. Stale fields from another mode are rejected, not ignored.
+  const hasImage = !!input.imageAssetId;
+  const hasFrames = !!input.firstFrameAssetId || !!input.lastFrameAssetId;
+  const hasRefs = input.refAssetIds.length > 0;
+  const hasVideo =
+    !!input.sourceVideoId || !!input.sourceVideoGcsUri || !!input.sourceVideoBytes;
+  const mixed = (allowed: string, offenders: string[]) => ({
+    code: "MIXED_INPUTS",
+    message: `${mode} accepts only ${allowed} — remove ${offenders.join(", ")}`,
+  });
+  if (mode === "t2v" && (hasImage || hasFrames || hasRefs || hasVideo)) {
+    const o = [
+      hasImage && "imageAssetId",
+      hasFrames && "frame asset(s)",
+      hasRefs && "refAssetIds",
+      hasVideo && "video source",
+    ].filter(Boolean) as string[];
+    return mixed("a prompt", o);
+  }
+  if (mode === "i2v" && (hasFrames || hasRefs || hasVideo)) {
+    const o = [
+      hasFrames && "frame asset(s)",
+      hasRefs && "refAssetIds",
+      hasVideo && "video source",
+    ].filter(Boolean) as string[];
+    return mixed("one imageAssetId", o);
+  }
+  if (mode === "f2v" && (hasImage || hasRefs || hasVideo)) {
+    const o = [
+      hasImage && "imageAssetId",
+      hasRefs && "refAssetIds",
+      hasVideo && "video source",
+    ].filter(Boolean) as string[];
+    return mixed("firstFrameAssetId + lastFrameAssetId", o);
+  }
+  if (mode === "r2v" && (hasImage || hasFrames || hasVideo)) {
+    const o = [
+      hasImage && "imageAssetId",
+      hasFrames && "frame asset(s)",
+      hasVideo && "video source",
+    ].filter(Boolean) as string[];
+    return mixed("refAssetIds (1–3)", o);
+  }
+  if (mode === "extend" && (hasImage || hasFrames || hasRefs)) {
+    const o = [
+      hasImage && "imageAssetId",
+      hasFrames && "frame asset(s)",
+      hasRefs && "refAssetIds",
+    ].filter(Boolean) as string[];
+    return mixed("a video source", o);
+  }
   if (mode === "i2v" && !input.imageAssetId) {
     return { code: "IMAGE_REQUIRED", message: "i2v requires imageAssetId" };
   }
