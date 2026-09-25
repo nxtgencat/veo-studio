@@ -70,6 +70,7 @@ All errors are `{ error: { code, message, details? } }`.
 | `SQLITE_FILE` | `server/data/veo.sqlite` | DB path |
 | `MEDIA_DIR` | `server/data/media` | File store |
 | `GOOGLE_CLOUD_PROJECT`, `VERTEX_ACCESS_TOKEN`, `VERTEXAI_LOCATION` | — | Env-mode credentials (`us-central1` default region) |
+| `VEO_PASSWORD` | — (open) | Access password. When set, every route except `/health` and `/auth/status` requires `Authorization: Bearer <pw>` (constant-time compare, 401 `UNAUTHORIZED` otherwise). Web UI prompts once per tab (sessionStorage) |
 | `LOG_LEVEL` | `info` | pino level |
 
 ## Layout

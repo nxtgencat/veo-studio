@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import { isAuthorized, passwordRequired } from "./access.ts";
 import { getDb, nowIso } from "./db.ts";
 import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
@@ -35,11 +36,26 @@ app.use(
   "*",
   cors({
     origin: (origin) => (allowedOrigins.includes(origin) ? origin : allowedOrigins[0] ?? origin),
-    allowHeaders: ["Content-Type", "Idempotency-Key"],
+    allowHeaders: ["Content-Type", "Idempotency-Key", "Authorization"],
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     maxAge: 86400,
   }),
 );
+
+// Password gate (VEO_PASSWORD env). Unset = open (dev default).
+// Registered AFTER cors so preflights never hit auth. /health stays public
+// for container healthchecks; /auth/status is public so the UI can prompt.
+const PUBLIC_PATHS = new Set(["/health", "/auth/status"]);
+
+app.use("*", async (c, next) => {
+  if (PUBLIC_PATHS.has(new URL(c.req.url).pathname)) return next();
+  if (!isAuthorized(c.req.header("authorization"))) {
+    return c.json({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required (set VEO_PASSWORD)" } }, 401);
+  }
+  return next();
+});
+
+app.get("/auth/status", (c) => c.json({ required: passwordRequired() }));
 
 // ---------- projects ----------
 app.post("/projects", async (c) => {

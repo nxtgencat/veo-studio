@@ -172,6 +172,35 @@ describe("routes", () => {
     expect((await app.request("/jobs/job_active", { method: "DELETE" })).status).toBe(404);
   });
 
+  test("password gate guards everything except health/status", async () => {
+    const prev = process.env.VEO_PASSWORD;
+    process.env.VEO_PASSWORD = "s3cret";
+    try {
+      expect((await app.request("/health")).status).toBe(200);
+      const st = (await (await app.request("/auth/status")).json()) as { required: boolean };
+      expect(st.required).toBe(true);
+      expect((await app.request("/projects")).status).toBe(401);
+      expect((await app.request("/projects", { headers: { Authorization: "Bearer wrong" } })).status).toBe(401);
+      const ok = await app.request("/projects", { headers: { Authorization: "Bearer s3cret" } });
+      expect(ok.status).toBe(200);
+    } finally {
+      if (prev === undefined) delete process.env.VEO_PASSWORD;
+      else process.env.VEO_PASSWORD = prev;
+    }
+  });
+
+  test("open access when no password is set", async () => {
+    const prev = process.env.VEO_PASSWORD;
+    delete process.env.VEO_PASSWORD;
+    try {
+      expect((await app.request("/projects")).status).toBe(200);
+      const st = (await (await app.request("/auth/status")).json()) as { required: boolean };
+      expect(st.required).toBe(false);
+    } finally {
+      if (prev !== undefined) process.env.VEO_PASSWORD = prev;
+    }
+  });
+
   test("GET /jobs lists created jobs", async () => {
     const r = await postJob();
     expect(r.status).toBe(202);

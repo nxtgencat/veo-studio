@@ -72,17 +72,20 @@ export function SettingsView() {
   const saveBucket = () => {
     if (bktBusy) return;
     setBktBusy(true);
-    // No bucket ID means the toggle is meaningless — force it off server-side.
+    // Empty ID forces the toggle off: "on but empty" can't be saved.
     const bucketValue = bucket.trim();
-    void saveSettings({ bucket: bucketValue, useBucket: bucketValue ? useBucket : false }).then(
+    const useValue = bucketValue ? useBucket : false;
+    void saveSettings({ bucket: bucketValue, useBucket: useValue }).then(
       () => {
         const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
         push(
-          bucket.trim() ? "Bucket verified & saved" : "Bucket cleared",
-          { icon: "✓", detail: loc ? `Reachable · ${loc}` : bucket.trim() ? "Saved" : undefined },
+          bucketValue ? "Bucket verified & saved" : "Bucket cleared",
+          { icon: "✓", detail: loc ? `Reachable · ${loc}` : bucketValue ? `Saved · use ${useValue ? "on" : "off"}` : undefined },
         );
       },
       (e) => {
+        // Revert the draft toggle to saved truth — a failed save changes nothing.
+        setUseBucket(project?.settings.useBucket ?? true);
         push("Bucket save failed — kept previous value", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e) });
       },
     ).finally(() => setBktBusy(false));
@@ -236,6 +239,23 @@ export function SettingsView() {
             )}
             <div className="flex gap-2 flex-wrap">
               <SlateButton variant="primary" size="sm" disabled={saBusy} onClick={saveSa}><Check className="size-3.5" /> {saBusy ? "Verifying…" : "Save & verify"}</SlateButton>
+              {serverSettings?.hasSaJson && (
+                <SlateButton
+                  variant="ghost"
+                  size="sm"
+                  disabled={saBusy}
+                  onClick={() => {
+                    if (saBusy) return;
+                    setSaBusy(true);
+                    void saveSettings({ saJson: "" }).then(
+                      () => push("Service account removed", { icon: "✓", tone: "info" }),
+                      (e) => push("Remove failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+                    ).finally(() => setSaBusy(false));
+                  }}
+                >
+                  Disconnect
+                </SlateButton>
+              )}
             </div>
           </div>
         </SlateCard>
@@ -258,15 +278,17 @@ export function SettingsView() {
               <div>
                 <p className="text-[13px] font-bold">Use bucket</p>
                 <p className="text-[11.5px] text-muted mt-0.5">
-                  {bucket.trim() || project.settings.bucket
-                    ? "On = outputs are saved to the bucket and generated videos stay extendable."
-                    : "Set a bucket ID above first — there is nothing to toggle on."}
+                  {!bucket.trim()
+                    ? "Set a bucket ID above first."
+                    : useBucket
+                      ? "On = outputs are saved to the bucket and generated videos stay extendable."
+                      : "Off = outputs return inline (not saved); only fresh uploads under 20 MB can extend."}
                 </p>
               </div>
               <SlateToggle
-                on={useBucket && !!(bucket.trim() || project.settings.bucket)}
+                on={useBucket && !!bucket.trim()}
                 label="Toggle bucket use"
-                disabled={!bucket.trim() && !project.settings.bucket}
+                disabled={!bucket.trim()}
                 onFlip={() => setUseBucket((v) => !v)}
               />
             </div>

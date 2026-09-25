@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Clapperboard, Database, Film, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
+import { Clapperboard, Database, Film, Lock, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
 import { TABS } from "@/lib/catalog";
 import { money } from "@/lib/format";
 import { modelOf, pendingOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
+import { useToasts } from "@/stores/use-ui";
 import { SlateBadge } from "@/components/slate/badge";
+import { SlateIconButton } from "@/components/slate/button";
 import { SlateSidebar, SlateSidebarDrawer, SlateSidebarTrigger } from "@/components/slate/sidebar";
 import { ProjectList } from "@/components/studio/project-list";
 
@@ -29,6 +31,8 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
   const firstRunning = projects.find((x) => pendingOf(x) > 0);
   const region = useStudio((s) => s.caps?.defaults.region ?? "us-central1");
   const rpm = active ? modelOf(active.gen.model).quotaRpm : null;
+  const logout = useStudio((s) => s.logout);
+  const push = useToasts((s) => s.push);
 
   if (!active) {
     return (
@@ -53,6 +57,18 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
         </span>
         <p className="font-display font-bold text-[14.5px] truncate min-w-0">{active.name}</p>
         <span className="ml-auto flex items-center gap-2 shrink-0">
+          <SlateIconButton
+            variant="quiet"
+            size="icon-xs"
+            label="Lock studio"
+            title="Lock studio (forget password on this browser)"
+            onClick={() => {
+              logout();
+              push("Locked", { icon: "✓", tone: "info" });
+            }}
+          >
+            <Lock className="size-3.5" />
+          </SlateIconButton>
           <SlateBadge tone="brand" title="Spent in this project">
             <Wallet className="size-3" /> {money(spendOf(active))}
           </SlateBadge>

@@ -102,6 +102,7 @@ Generation modes at a glance:
 | `ALLOWED_ORIGINS` | server | `http://localhost:3000` | CORS allowlist (comma-separated) |
 | `SQLITE_FILE` / `MEDIA_DIR` | server | `server/data/*` | DB path / media store |
 | `GOOGLE_CLOUD_PROJECT`, `VERTEX_ACCESS_TOKEN`, `VERTEXAI_LOCATION` | server | — | Env-mode Vertex auth (`us-central1` default) |
+| `VEO_PASSWORD` | server | — (open) | Access password: all API routes except `/health` + `/auth/status` require `Authorization: Bearer`. Web prompts once, stays signed in (lock from header) |
 | `LOG_LEVEL` | server | info | pino log level |
 
 ## Scripts

@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { api, apiBase } from "@/lib/api";
+import { api, apiBase, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
 import { imageDims } from "@/lib/media";
@@ -211,6 +211,9 @@ interface StudioState {
   activeId: string | null;
   hydrated: boolean;
   refreshing: boolean;
+  authRequired: boolean;
+  login: (password: string) => Promise<{ ok: boolean; error?: string }>;
+  logout: () => void;
   serverSettings: (projectId: string) => ServerSettings | undefined;
   hydrate: () => Promise<void>;
   retry: () => Promise<void>;
@@ -359,6 +362,13 @@ export const useStudio = create<StudioState>()((set, get) => {
   async function doHydrate() {
     local = loadLocal();
     try {
+      // Password gate first: don't fan out authed calls that will all 401.
+      const auth = await api.authStatus().catch(() => ({ required: false }));
+      if (auth.required && !getAuthToken()) {
+        set({ hydrated: true, serverUp: true, authRequired: true, lastError: "" });
+        return;
+      }
+      set({ authRequired: false });
       const [caps, projs] = await Promise.all([api.capabilities(), api.listProjects()]);
       setCapabilities(caps);
       const srv: SrvProject[] = projs.projects.map((p) => ({
@@ -396,6 +406,28 @@ export const useStudio = create<StudioState>()((set, get) => {
     activeId: null,
     hydrated: false,
     refreshing: false,
+    authRequired: false,
+
+    login: async (password: string) => {
+      setAuthToken(password);
+      try {
+        // Probe with a real call: wrong password must not clear the gate.
+        await api.capabilities();
+        set({ authRequired: false });
+        set({ hydrated: false });
+        await get().hydrate();
+        return { ok: true };
+      } catch (e) {
+        setAuthToken(null);
+        set({ authRequired: true });
+        return { ok: false, error: e instanceof Error ? e.message : "Login failed" };
+      }
+    },
+
+    logout: () => {
+      setAuthToken(null);
+      set({ authRequired: true });
+    },
 
     hydrate: () => {
       if (get().hydrated) return Promise.resolve();
@@ -813,9 +845,10 @@ export const useStudio = create<StudioState>()((set, get) => {
       const id = get().activeId;
       if (!id) return;
       // Server owns auth/bucket; the SA key itself is only ever sent up, never stored locally.
+      // Empty-string saJson is meaningful (clear the stored key) — only undefined means "don't touch".
       const { saJson, bucket, useBucket, authMode, ...ytPatch } = patch;
       const serverPatch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" } = {};
-      if (typeof saJson === "string" && saJson.trim()) serverPatch.saJson = saJson;
+      if (typeof saJson === "string") serverPatch.saJson = saJson;
       if (bucket !== undefined) serverPatch.bucket = bucket;
       if (useBucket !== undefined) serverPatch.useBucket = useBucket;
       if (authMode !== undefined) serverPatch.authMode = authMode;
@@ -846,3 +879,8 @@ export const useStudio = create<StudioState>()((set, get) => {
     },
   };
 });
+
+// A 401 anywhere means the password changed or the session died: pop the gate.
+if (typeof window !== "undefined") {
+  onUnauthorized(() => useStudio.setState({ authRequired: true }));
+}

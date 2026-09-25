@@ -1,7 +1,7 @@
 # Single container: web :3000 + backend on loopback :8787 (via /api proxy).
 # Usage: docker login ghcr.io && docker compose pull && docker compose up -d
 # Optional .env next to this file for backend secrets (VERTEX_ACCESS_TOKEN,
-# GOOGLE_CLOUD_PROJECT, VERTEXAI_LOCATION, LOG_LEVEL).
+# GOOGLE_CLOUD_PROJECT, VERTEXAI_LOCATION, LOG_LEVEL, VEO_PASSWORD).
 
 name: veo
 

@@ -18,6 +18,69 @@ export class ApiError extends Error {
   }
 }
 
+// Access password (server VEO_PASSWORD). localStorage, 72h expiry,
+// cleared on logout or any 401. Never in the bundle.
+const TOKEN_KEY = "veo-auth";
+const TOKEN_TTL_MS = 72 * 3600 * 1000;
+
+interface StoredToken {
+  t: string;
+  exp: number;
+}
+
+function readStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredToken>;
+    const exp = typeof parsed.exp === "number" ? parsed.exp : NaN;
+    if (typeof parsed.t !== "string" || !(exp > Date.now())) {
+      window.localStorage.removeItem(TOKEN_KEY);
+      return null;
+    }
+    return parsed.t;
+  } catch {
+    return null; // private mode — memory only
+  }
+}
+
+function writeStoredToken(t: string | null) {
+  try {
+    if (typeof window === "undefined") return;
+    if (t) window.localStorage.setItem(TOKEN_KEY, JSON.stringify({ t, exp: Date.now() + TOKEN_TTL_MS }));
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode — memory only */ }
+}
+
+export function getAuthToken(): string | null {
+  return readStoredToken();
+}
+
+export function setAuthToken(t: string | null) {
+  writeStoredToken(t);
+}
+
+let unauthorizedHandler: (() => void) | null = null;
+export function onUnauthorized(fn: (() => void) | null) {
+  unauthorizedHandler = fn;
+}
+
+function authHeaders(init?: RequestInit): Record<string, string> {
+  const token = getAuthToken();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...((init?.headers ?? {}) as Record<string, string>),
+  };
+}
+
+function handleUnauthorized(res: Response) {
+  if (res.status === 401) {
+    setAuthToken(null);
+    unauthorizedHandler?.();
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string): Promise<T> {
   let res: Response;
   try {
@@ -25,7 +88,7 @@ async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string)
       ...init,
       headers: {
         "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
+        ...authHeaders(init),
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       },
     });
@@ -36,6 +99,7 @@ async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string)
     error?: { code?: string; message?: string; details?: unknown };
   };
   if (!res.ok) {
+    handleUnauthorized(res);
     throw new ApiError(res.status, json.error?.code ?? "REQUEST_FAILED", json.error?.message ?? `Request failed (${res.status})`, json.error?.details);
   }
   return json as T;
@@ -128,7 +192,7 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${apiPrefix("/media/upload")}`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/media/upload")}`, { method: "POST", headers: authHeaders(), body: fd });
     } catch (e) {
       throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
@@ -140,6 +204,7 @@ export const api = {
       mime?: string;
     };
     if (!res.ok || !json.id || !json.url) {
+      handleUnauthorized(res);
       throw new ApiError(res.status, json.error?.code ?? "UPLOAD_FAILED", json.error?.message ?? `Upload failed (${res.status})`);
     }
     return { id: json.id, url: json.url, bytes: json.bytes ?? 0, mime: json.mime ?? "" };
@@ -153,11 +218,12 @@ export const api = {
     }).toString();
     let res: Response;
     try {
-      res = await fetch(`${apiPrefix(`/backup?${q}`)}`);
+      res = await fetch(`${apiPrefix(`/backup?${q}`)}`, { headers: authHeaders() });
     } catch (e) {
       throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
     if (!res.ok) {
+      handleUnauthorized(res);
       const json = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
       throw new ApiError(res.status, json.error?.code ?? "BACKUP_FAILED", json.error?.message ?? `Backup failed (${res.status})`);
     }
@@ -171,7 +237,7 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${apiPrefix("/restore")}`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/restore")}`, { method: "POST", headers: authHeaders(), body: fd });
     } catch (e) {
       throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
@@ -180,6 +246,7 @@ export const api = {
       imported?: Record<string, number>;
     };
     if (!res.ok) {
+      handleUnauthorized(res);
       throw new ApiError(res.status, json.error?.code ?? "RESTORE_FAILED", json.error?.message ?? `Restore failed (${res.status})`);
     }
     return json as Record<string, Record<string, number>>;
@@ -193,7 +260,7 @@ export const api = {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      res = await fetch(`${apiPrefix("/restore/inspect")}`, { method: "POST", body: fd });
+      res = await fetch(`${apiPrefix("/restore/inspect")}`, { method: "POST", headers: authHeaders(), body: fd });
     } catch (e) {
       throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
     }
@@ -203,12 +270,20 @@ export const api = {
       counts?: Record<string, number>;
     };
     if (!res.ok || !json.manifest || !json.counts) {
+      handleUnauthorized(res);
       throw new ApiError(res.status, json.error?.code ?? "INSPECT_FAILED", json.error?.message ?? `Could not read backup (${res.status})`);
     }
     return { manifest: json.manifest, counts: json.counts };
+  },
+
+  authStatus: async (): Promise<{ required: boolean }> => {
+    const res = await fetch(`${apiPrefix("/auth/status")}`);
+    if (!res.ok) throw new ApiError(res.status, "AUTH_STATUS", `Auth check failed (${res.status})`);
+    return (await res.json()) as { required: boolean };
   },
 };
 
 export function apiBase(): string {
   return REMOTE === "" ? "/api" : REMOTE;
 }
+
