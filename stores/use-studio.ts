@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { api, apiBase, authedMediaUrl, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
+import { api, apiBase, authedMediaUrl, errOf, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
 import { expectedDur } from "@/lib/format";
@@ -126,8 +126,7 @@ function toVideoItem(
   youtube: Record<string, NonNullable<VideoItem["youtube"]>>,
 ): VideoItem {
   const raw = parseRawInputs(v.inputs_json);
-  let inputs: VideoItem["inputs"] = {};
-  inputs = mapInputs(raw, elements);
+  const inputs: VideoItem["inputs"] = mapInputs(raw, elements);
   return {
     id: v.id,
     jobId: v.job_id,
@@ -218,7 +217,6 @@ interface StudioState {
   projects: Project[];
   activeId: string | null;
   hydrated: boolean;
-  refreshing: boolean;
   authRequired: boolean;
   /** Server-side account totals (all projects, even never-opened ones). */
   totals: {
@@ -315,9 +313,6 @@ export const useStudio = create<StudioState>()((set, get) => {
     const projects = buildProjects(s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local);
     set({ ...patch, projects });
   };
-
-  const errOf = (e: unknown): string =>
-    e instanceof Error ? e.message : String(e ?? "Request failed");
 
   async function fetchScope(projectId: string) {
     const [els, libs, jobs, cfgResp, totals] = await Promise.all([
@@ -424,7 +419,6 @@ export const useStudio = create<StudioState>()((set, get) => {
     projects: [],
     activeId: null,
     hydrated: false,
-    refreshing: false,
     authRequired: false,
     totals: null,
 
@@ -492,13 +486,10 @@ export const useStudio = create<StudioState>()((set, get) => {
     refreshActive: async () => {
       const id = get().activeId;
       if (!id) return;
-      set({ refreshing: true });
       try {
         await fetchScope(id);
       } catch (e) {
         set({ lastError: errOf(e) });
-      } finally {
-        set({ refreshing: false });
       }
     },
 

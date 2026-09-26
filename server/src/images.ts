@@ -5,6 +5,8 @@
 import { getDb } from "./db.ts";
 
 export const IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+/** Browser-captured thumbnails/posters ride inline in JSON — smaller cap. */
+export const THUMB_MAX_BYTES = 2_000_000;
 export const ALLOWED_IMAGE_MIMES = ["image/jpeg", "image/png"] as const;
 export type AllowedImageMime = (typeof ALLOWED_IMAGE_MIMES)[number];
 
@@ -37,6 +39,31 @@ export function sniffImageMime(bytes: Uint8Array): AllowedImageMime | null {
     bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
   ) {
     return "image/png";
+  }
+  return null;
+}
+
+/**
+ * Validate an inline data-URL image (JPEG/PNG magic bytes + size cap).
+ * Remote URLs pass (checked at submit time). Null when fine, else the
+ * coded error for err(). `required` rejects non-data-URLs (thumbnails).
+ */
+export function validateInlineImage(
+  url: string,
+  maxBytes: number,
+  what: string,
+  required = false,
+): { code: string; message: string } | null {
+  const inline = parseDataUrl(url);
+  if (!inline) {
+    return required ? { code: "E_IMAGE_TYPE", message: `${what} must be JPEG or PNG, got unknown` } : null;
+  }
+  if (!isAllowedImageMime(inline.mime) || !sniffImageMime(inline.bytes)) {
+    return { code: "E_IMAGE_TYPE", message: `${what} must be JPEG or PNG, got ${inline.mime || "unknown"}` };
+  }
+  if (inline.bytes.length > maxBytes) {
+    const cap = maxBytes >= 1048576 ? `${Math.round(maxBytes / 1048576)} MB` : `${Math.round(maxBytes / 1000)} KB`;
+    return { code: "E_IMAGE_TOO_LARGE", message: `${what} exceeds ${cap}` };
   }
   return null;
 }

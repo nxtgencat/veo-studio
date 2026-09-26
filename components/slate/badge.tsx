@@ -31,4 +31,3 @@ export function SlateBadge({ className, tone, tip, ...props }: SlateBadgeProps) 
   const badge = <span className={cn(badgeVariants({ tone }), "tabular-nums", className)} {...props} />;
   return tip ? <SlateTooltip tip={tip}>{badge}</SlateTooltip> : badge;
 }
-export { badgeVariants };

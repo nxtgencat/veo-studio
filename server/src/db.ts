@@ -14,6 +14,11 @@ export function getDb(): Database {
   return db;
 }
 
+/** Shared project-exists guard (routes 404s + job creation). */
+export function projectExists(pid: string): boolean {
+  return !!getDb().query("SELECT id FROM projects WHERE id=?").get(pid);
+}
+
 export function migrate(d: Database) {
   d.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -101,6 +106,13 @@ export function migrate(d: Database) {
       mime TEXT NOT NULL,
       bytes INTEGER NOT NULL,
       path TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS backups (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      counts TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
   `);

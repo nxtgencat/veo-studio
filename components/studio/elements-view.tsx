@@ -7,12 +7,12 @@ import { EL_CATS } from "@/lib/catalog";
 import { fileToImage } from "@/lib/media";
 import { elementFormSchema, type ElementCat } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts } from "@/stores/use-ui";
+import { pushErr, useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDialog } from "@/components/slate/overlays";
 import { PageHead, SlateEmpty, SlateField, SlateLabel, SlateSegmented } from "@/components/slate/core";
-import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { ConfirmDeleteDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 import { SlateTooltip } from "@/components/slate/tooltip";
 
 export function ElementsView() {
@@ -116,12 +116,12 @@ export function ElementsView() {
           save={async (img, name, note) => {
             const parsed = elementFormSchema.safeParse({ name: name.trim() || "Untitled", img, note: note.trim() });
             if (!parsed.success) {
-              push(parsed.error.issues[0]?.message ?? "Invalid element", { icon: "!", tone: "danger" });
+              pushErr(parsed.error.issues[0]?.message ?? "Invalid element");
               return;
             }
             const r = await addElement(cat, { name: parsed.data.name, imageUrl: parsed.data.img, note: parsed.data.note });
             if (!r.ok) {
-              push(r.error ?? "Could not add element", { icon: "!", tone: "danger" });
+              pushErr(r.error ?? "Could not add element");
               return;
             }
             push("Element added", { icon: "✓" });
@@ -161,7 +161,7 @@ function ElementModal({
           e.preventDefault();
           const img = up || url.trim();
           if (!img) {
-            push("Add an image URL or upload a file", { icon: "!", tone: "danger" });
+            pushErr("Add an image URL or upload a file");
             return;
           }
           save(img, name, note);
@@ -200,7 +200,7 @@ function ElementModal({
                   if (!name.trim()) {
                     setName((f.name || "").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Upload");
                   }
-                  fileToImage(f).then(setUp).catch(() => push("Could not read that image", { icon: "!", tone: "danger" }));
+                  fileToImage(f).then(setUp).catch(() => pushErr("Could not read that image"));
                   e.target.value = "";
                 }}
               />
@@ -235,7 +235,7 @@ function RenameElementModal({ cat, id, close }: { cat: ElementCat; id: string; c
     void renameElement(id, { name, note }).then((r) => {
       setBusy(false);
       if (!r.ok) {
-        push(r.error ?? "Could not rename", { icon: "!", tone: "danger" });
+        pushErr(r.error ?? "Could not rename");
         return;
       }
       push("Element renamed", { icon: "✓" });
@@ -324,23 +324,14 @@ function DeleteElementConfirm({ cat, id, close }: { cat: ElementCat; id: string;
   const el = project?.elements[cat]?.find((x) => x.id === id);
   if (!el) return null;
   return (
-    <SlateModal onClose={close}>
-      <h3 className="font-display font-bold text-[16px]">Delete “{el.name}”?</h3>
-      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">
-        Removes it from Elements. Videos already generated from it are not affected.
-      </p>
-      <div className="mt-5 flex gap-2 justify-end">
-        <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
-        <SlateButton
-          variant="danger"
-          onClick={() => {
-            void deleteElement(id).then(() => push("Element deleted", { icon: "🗑", tone: "info" }));
-            close();
-          }}
-        >
-          Delete
-        </SlateButton>
-      </div>
-    </SlateModal>
+    <ConfirmDeleteDialog
+      title={`Delete “${el.name}”?`}
+      body="Removes it from Elements. Videos already generated from it are not affected."
+      close={close}
+      confirm={() => {
+        void deleteElement(id).then(() => push("Element deleted", { icon: "🗑", tone: "info" }));
+        close();
+      }}
+    />
   );
 }

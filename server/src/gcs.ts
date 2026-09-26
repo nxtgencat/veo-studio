@@ -7,11 +7,11 @@
 // `storage.buckets.get`, which the recommended Storage Object User role does
 // NOT include — so metadata GET is only a best-effort extra for display.
 
-import { childLogger } from "./logger.ts";
+import { logger } from "./logger.ts";
 import { MEDIA_MAX_BYTES } from "./media-store.ts";
 import { readCapped } from "./images.ts";
 
-const log = childLogger({ module: "gcs" });
+const log = logger.child({ module: "gcs" });
 
 const NEED_READ = ["storage.objects.get", "storage.objects.list"];
 const PROBE = [...NEED_READ, "storage.objects.create"];
@@ -74,7 +74,7 @@ export async function checkBucket(bucket: string, token: string): Promise<Bucket
   return check;
 }
 
-export function parseGsUri(uri: string): { bucket: string; object: string } | null {
+function parseGsUri(uri: string): { bucket: string; object: string } | null {
   const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(uri.trim());
   if (!m?.[1] || !m?.[2]) return null;
   return { bucket: m[1], object: m[2] };

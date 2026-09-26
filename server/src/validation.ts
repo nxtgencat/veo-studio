@@ -3,9 +3,7 @@ import {
   EXTEND_SECONDS,
   EXTEND_TOTAL_CAP,
   getModel,
-  type Aspect,
   type GenerationMode,
-  type Resolution,
 } from "./capabilities.ts";
 
 export const jobInputSchema = z.object({
@@ -104,50 +102,20 @@ export function validateJob(input: JobInput): ValidationError | null {
   const hasRefs = input.refAssetIds.length > 0;
   const hasVideo =
     !!input.sourceVideoId || !!input.sourceVideoGcsUri || !!input.sourceVideoBytes;
-  const mixed = (allowed: string, offenders: string[]) => ({
-    code: "MIXED_INPUTS",
-    message: `${mode} accepts only ${allowed} — remove ${offenders.join(", ")}`,
-  });
-  if (mode === "t2v" && (hasImage || hasFrames || hasRefs || hasVideo)) {
-    const o = [
-      hasImage && "imageAssetId",
-      hasFrames && "frame asset(s)",
-      hasRefs && "refAssetIds",
-      hasVideo && "video source",
-    ].filter(Boolean) as string[];
-    return mixed("a prompt", o);
-  }
-  if (mode === "i2v" && (hasFrames || hasRefs || hasVideo)) {
-    const o = [
-      hasFrames && "frame asset(s)",
-      hasRefs && "refAssetIds",
-      hasVideo && "video source",
-    ].filter(Boolean) as string[];
-    return mixed("one imageAssetId", o);
-  }
-  if (mode === "f2v" && (hasImage || hasRefs || hasVideo)) {
-    const o = [
-      hasImage && "imageAssetId",
-      hasRefs && "refAssetIds",
-      hasVideo && "video source",
-    ].filter(Boolean) as string[];
-    return mixed("firstFrameAssetId + lastFrameAssetId", o);
-  }
-  if (mode === "r2v" && (hasImage || hasFrames || hasVideo)) {
-    const o = [
-      hasImage && "imageAssetId",
-      hasFrames && "frame asset(s)",
-      hasVideo && "video source",
-    ].filter(Boolean) as string[];
-    return mixed("refAssetIds (1–3)", o);
-  }
-  if (mode === "extend" && (hasImage || hasFrames || hasRefs)) {
-    const o = [
-      hasImage && "imageAssetId",
-      hasFrames && "frame asset(s)",
-      hasRefs && "refAssetIds",
-    ].filter(Boolean) as string[];
-    return mixed("a video source", o);
+  // Mode → [allowed description, forbidden slot labels].
+  const MODE_SLOTS: Record<GenerationMode, [string, [boolean, string][]]> = {
+    t2v: ["a prompt", [[hasImage, "imageAssetId"], [hasFrames, "frame asset(s)"], [hasRefs, "refAssetIds"], [hasVideo, "video source"]]],
+    i2v: ["one imageAssetId", [[hasFrames, "frame asset(s)"], [hasRefs, "refAssetIds"], [hasVideo, "video source"]]],
+    f2v: ["firstFrameAssetId + lastFrameAssetId", [[hasImage, "imageAssetId"], [hasRefs, "refAssetIds"], [hasVideo, "video source"]]],
+    r2v: ["refAssetIds (1–3)", [[hasImage, "imageAssetId"], [hasFrames, "frame asset(s)"], [hasVideo, "video source"]]],
+    extend: ["a video source", [[hasImage, "imageAssetId"], [hasFrames, "frame asset(s)"], [hasRefs, "refAssetIds"]]],
+  };
+  const spec = MODE_SLOTS[mode];
+  if (spec) {
+    const offenders = spec[1].filter(([present]) => present).map(([, label]) => label);
+    if (offenders.length) {
+      return { code: "MIXED_INPUTS", message: `${mode} accepts only ${spec[0]} — remove ${offenders.join(", ")}` };
+    }
   }
   if (mode === "i2v" && !input.imageAssetId) {
     return { code: "IMAGE_REQUIRED", message: "i2v requires imageAssetId" };
@@ -198,5 +166,3 @@ export function validateJob(input: JobInput): ValidationError | null {
 export function zodDetails(e: z.ZodError) {
   return e.issues.map((i) => ({ path: i.path.join("."), message: i.message }));
 }
-
-export type { Resolution, Aspect };

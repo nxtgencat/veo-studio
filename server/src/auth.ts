@@ -7,8 +7,8 @@
 
 import { getDb, nowIso } from "./db.ts";
 
-export const TOKEN_URL = "https://oauth2.googleapis.com/token";
-export const CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 
 export type AuthMode = "service_account" | "env";
 

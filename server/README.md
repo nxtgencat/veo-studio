@@ -31,11 +31,11 @@ All errors are `{ error: { code, message, details? } }`.
 - `POST /jobs/:id/cancel` — best-effort cancel. Returns `cancelled` (no output, no per-second charge) or `already_done` (clip completed, full charge applies) with a `costImplication` string.
 - `GET /library[?projectId=]`, `GET /library/:id` — finished videos + provenance (`video_url`, `gcs_uri`, model, inputs). `PATCH /library/:id` sets a browser-captured thumbnail; `DELETE` also drops the hosted file. `POST /library/import` registers an upload (server probes the container rather than trusting client meta).
 - `GET /models/capabilities` — machine-readable matrix from `KNOWLEDGE.md` (models × modes, resolutions, durations, audio, quotas) + per-second pricing + defaults. Drive all UI enable/disable and live price math from this.
-- `POST /frames/extract` (multipart `video`, optional `count` 1–10) — MediaBunny demux: duration, dimensions, codec, keyframe index. Pixel thumbnails are best-effort: Bun has no WebCodecs `VideoDecoder`, so headless responses carry `thumbnailStatus: "decoder-unavailable-in-this-runtime"` with `thumbnails: []`; the same code returns base64 PNGs where a decoder exists.
+- Uploads are chunked (8 MiB octet-stream parts — every default body cap holds, no raised limits anywhere): `POST /uploads` (`kind: backup | media`, `filename`, `mime`, `size` — validated upfront) → `PUT /uploads/:id/part?index=N` (strictly in-order, retry re-sends) → `POST /uploads/:id/complete` (finalizes: backups manifest-checked into the store, media filed) / `DELETE /uploads/:id` (abort). 1 GB backup / 200 MB media caps enforced at init.
+- `GET /media/:id` (Range-capable) — the server file store behind uploads and archived outputs.
 - CRUD: `POST/GET /projects`, `GET/PATCH/DELETE /projects/:id`, `/projects/:id/elements` (`characters | locations | assets | frames`), `PATCH/DELETE /elements/:id`.
 - `GET/PATCH /projects/:id/settings` — service-account JSON (write-only), bucket, `useBucket` toggle, `authMode` (`service_account` default | `env`). Reads expose only `hasSaJson` / `saEmail` / `saProjectId`, never the key. Writes are **verified live before saving** (fresh keys must mint a token; buckets must exist and grant at least object read).
-- `POST /media/upload` (multipart `file`, 200 MB cap, video/image only) + `GET /media/:id` (Range-capable) — the server file store behind uploads and archived outputs.
-- `GET /backup?elements=|generated=|uploads=` (tar.gz download) + `POST /restore` (multipart, full merge with per-table counts) + `POST /restore/inspect` (dry-run counts + manifest).
+- Backups (stored `.tar` files, plain tar — mp4s don't compress): `POST /backups` builds everything, `GET /backups` lists, `GET /backups/:id/download` streams the file, chunked upload files one, `POST /backups/:id/restore` merges with per-table counts, `DELETE /backups/:id` removes file + row. 1 GB cap per file, enforced at upload init and build.
 - `GET /health` → `{ ok: true }`.
 
 ## Rules enforced (`src/validation.ts`)
@@ -88,9 +88,10 @@ server/
   src/db.ts            bun:sqlite schema (projects/elements/jobs/library/settings)
   src/media-store.ts   data/media file store
   src/images.ts        magic-byte sniffing + size gates
-  src/frames.ts        MediaBunny extraction + hand-rolled PNG encoder
-  src/backup.ts        tar.gz export/import
+  src/frames.ts        MediaBunny probing + hand-rolled PNG encoder
+  src/backup.ts        plain-tar export/import + chunked upload sessions
   src/routes.ts        Hono routes
+  src/uploads.ts       chunked upload sessions (init/part/complete/abort)
   src/index.ts         entrypoint (Bun.serve)
   tests/               bun:test (validation, pricing, jobs, frames)
 ```

@@ -117,32 +117,7 @@ export const projectSchema = z.object({
   settings: projectSettingsSchema,
 });
 
-// ---------- URL / query schemas (deep linking) ----------
-export const projectIdSchema = z.string().min(1).max(64);
-
-export const libraryQuerySchema = z.object({
-  status: z.enum(["all", "pending", "success", "failed"]).default("all"),
-  model: z.string().default("all"),
-  res: z.string().default("all"),
-  aspect: z.string().default("all"),
-  dur: z.string().default("all"),
-  audio: z.enum(["all", "on", "off"]).default("all"),
-});
-
-export const elementsQuerySchema = z.object({
-  cat: elementCatSchema.default("characters"),
-});
-
-export const generateQuerySchema = z.object({
-  mode: generationModeSchema.optional(),
-  model: z.string().optional(),
-  video: z.string().optional(),
-  youtube: z.string().optional(),
-  picker: z.enum(["image", "first", "last", "ref", "video"]).optional(),
-  refIndex: z.coerce.number().int().min(0).max(2).optional(),
-  advanced: z.enum(["0", "1"]).optional(),
-});
-
+// ---------- forms ----------
 export const projectNameSchema = z.string().trim().min(1, "Name is required").max(60);
 export const elementFormSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(80),
@@ -167,4 +142,3 @@ export type ElementCat = z.infer<typeof elementCatSchema>;
 export type StudioTab = z.infer<typeof studioTabSchema>;
 export type GenerationMode = z.infer<typeof generationModeSchema>;
 export type Project = z.infer<typeof projectSchema>;
-export type LibraryQuery = z.infer<typeof libraryQuerySchema>;

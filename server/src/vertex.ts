@@ -2,9 +2,9 @@
 // Auth (project + Bearer token) comes from the caller's ResolvedAuth —
 // service-account JSON by default, env creds only when toggled per project.
 
-import { childLogger } from "./logger.ts";
+import { logger } from "./logger.ts";
 
-const log = childLogger({ module: "vertex" });
+const log = logger.child({ module: "vertex" });
 
 export interface VertexCtx {
   project: string;
@@ -57,24 +57,16 @@ export type VertexOperation = {
 
 export const INLINE_RESPONSE_MAX = 100 * 1024 * 1024;
 
-export function vertexEnvCtx(): VertexCtx {
-  const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.VERTEXAI_PROJECT ?? "";
-  const location = process.env.VERTEXAI_LOCATION ?? "us-central1";
-  const token = process.env.VERTEX_ACCESS_TOKEN ?? "";
-  if (!project || !token) {
-    throw Object.assign(new Error("Vertex credentials missing"), {
-      code: "E_VERTEX_NOT_CONFIGURED",
-      hint: "Paste service account JSON in Settings, or switch auth to Environment and set GOOGLE_CLOUD_PROJECT + VERTEX_ACCESS_TOKEN.",
-    });
-  }
-  return { project, location, token };
+/** Shared non-OK mapping: first 500 chars of the body + status. */
+async function vertexErr(res: Response, code: string, what: string): Promise<never> {
+  const text = await res.text();
+  throw Object.assign(new Error(`${what}: ${res.status} ${text.slice(0, 500)}`), { code, status: res.status });
 }
 
 export async function vertexSubmit(params: VertexSubmitParams, ctx: VertexCtx): Promise<string> {
   const url = `https://${ctx.location}-aiplatform.googleapis.com/v1/projects/${ctx.project}/locations/${ctx.location}/publishers/google/models/${params.model}:predictLongRunning`;
   const instances: Record<string, unknown>[] = [{ prompt: params.prompt }];
-  const first = instances[0];
-  if (!first) throw Object.assign(new Error("unreachable"), { code: "E_VERTEX_INTERNAL" });
+  const first = instances[0] as Record<string, unknown>;
   if (params.imageBytes) {
     first.image = {
       bytesBase64Encoded: params.imageBytes,
@@ -124,11 +116,7 @@ export async function vertexSubmit(params: VertexSubmitParams, ctx: VertexCtx): 
     body: JSON.stringify({ instances, parameters }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw Object.assign(new Error(`Vertex submit failed: ${res.status} ${text.slice(0, 500)}`), {
-      code: "E_VERTEX_SUBMIT",
-      status: res.status,
-    });
+    throw await vertexErr(res, "E_VERTEX_SUBMIT", "Vertex submit failed");
   }
   const json = (await res.json()) as { name?: string };
   if (!json.name) throw Object.assign(new Error("Vertex returned no operation name"), { code: "E_VERTEX_NO_OP" });
@@ -262,20 +250,7 @@ export async function vertexCancel(
     body: "{}",
   });
   if (!res.ok && res.status !== 404) {
-    const text = await res.text();
-    throw Object.assign(new Error(`Vertex cancel failed: ${res.status} ${text.slice(0, 500)}`), {
-      code: "E_VERTEX_CANCEL",
-      status: res.status,
-    });
+    throw await vertexErr(res, "E_VERTEX_CANCEL", "Vertex cancel failed");
   }
   return { cancelled: true, alreadyDone: false };
-}
-
-export function vertexConfigured(): boolean {
-  try {
-    vertexEnvCtx();
-    return true;
-  } catch {
-    return false;
-  }
 }

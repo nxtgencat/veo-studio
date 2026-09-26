@@ -1,9 +1,8 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import { useTheme } from "next-themes";
+import { ThemeProvider, useTheme } from "next-themes";
 import { Clapperboard, Eye, EyeOff, KeyRound, Loader2, Moon, Sun } from "lucide-react";
-import { ThemeProvider } from "@/components/theme-provider";
 import { useHydrateStudio, useRenderTick } from "@/hooks/use-studio-hooks";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";

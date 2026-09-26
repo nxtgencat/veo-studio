@@ -7,22 +7,23 @@ import {
   Trash2,
 } from "lucide-react";
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
-import { ago, expectedDur, fmtBytes, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
-import { modelOf } from "@/lib/pricing";
-import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
-import { api, authedMediaUrl } from "@/lib/api";
-import { ytConnect, ytUploadVideo, ytVideoState } from "@/lib/youtube";
+import { ago, fmtBytes, fmtDurPair, fullTs } from "@/lib/format";
+import { expectedDurOf, modelOf } from "@/lib/pricing";
+import { captureAt, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
+import { authedMediaUrl, errOf } from "@/lib/api";
+import { uploadVideoFile } from "@/lib/upload-video";
+import { ytConnectWithChannel, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts, useYtAuth } from "@/stores/use-ui";
+import { pushErr, useToasts, useYtAuth } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel, SlateProgress, SlateSearchField, SlateTextarea, SlateUploadCard } from "@/components/slate/core";
-import { SlateDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { ConfirmDeleteDialog, SlateDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 import { SlateTooltip } from "@/components/slate/tooltip";
-import { ModeBadge, StatusBadge } from "@/components/studio/shared";
+import { ModeBadge, StatusBadge, VideoCost, VideoProgress } from "@/components/studio/shared";
 
 /**
  * URL-driven dialogs — single place for every ?video= ?youtube= ?picker= ?advanced=
@@ -115,10 +116,10 @@ function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refI
                 imageUrl: url,
                 note: "Uploaded in picker",
               });
-              if (!r.ok) push(r.error ?? "Could not save image", { icon: "!", tone: "danger" });
+              if (!r.ok) pushErr(r.error ?? "Could not save image");
               else pick(url);
             })
-            .catch(() => push("Could not read that image", { icon: "!", tone: "danger" }))
+            .catch(() => pushErr("Could not read that image"))
             .finally(() => setBusy(false));
         }}
       />
@@ -186,28 +187,21 @@ function VideoPickerDialog({ close }: { close: () => void }) {
         busy={busy}
         onFile={(f) => {
           setBusy(true);
-          captureVideo(f)
-            .then(async ({ thumb, meta }) => {
-              const uploaded = await api.uploadMedia(f).catch(() => null);
-              const r = await importVideo({
-                prompt: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
-                res: meta.res,
-                aspect: meta.aspect,
-                dur: meta.dur,
-                thumbDataUrl: thumb,
-                ...(uploaded ? { mediaId: uploaded.id } : {}),
-              });
+          uploadVideoFile(f, importVideo)
+            .then((r) => {
               if (!r.ok || !r.id) {
-                push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
+                if (!r.stored) pushErr("Server upload failed — importing record only", r.uploadDetail || undefined);
+                pushErr(r.error ?? "Import failed");
                 return;
               }
-              updateActive((d) => { d.gen.extendVideo = r.id as string; });
+              const id = r.id;
+              updateActive((d) => { d.gen.extendVideo = id; });
               close();
               const tooBig = f.size > INLINE_VIDEO_MAX;
               push(
-                meta.dur > 30
-                  ? `Imported — but ${meta.dur}s is too long to extend (≤30s)`
-                  : !uploaded
+                r.dur > 30
+                  ? `Imported — but ${r.dur}s is too long to extend (≤30s)`
+                  : !r.stored
                     ? "Imported as record only (file not stored) — extend needs the file"
                     : tooBig
                       ? "Imported and selected — file is over 20MB, extend needs a GCS source for it"
@@ -215,7 +209,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
                 { icon: "✓" },
               );
             })
-            .catch(() => push("Could not read that video", { icon: "!", tone: "danger" }))
+            .catch(() => pushErr("Could not read that video"))
             .finally(() => setBusy(false));
         }}
       />
@@ -231,14 +225,14 @@ function VideoPickerDialog({ close }: { close: () => void }) {
       ) : (
         <div className="space-y-2 max-h-[46dvh] overflow-y-auto pr-0.5">
           {shown.map((v) => {
-            const exp = expectedDur(v, (id) => project.library.find((x) => x.id === id));
+            const exp = expectedDurOf(v, project.library);
             return (
             <button
               key={v.id}
               type="button"
               onClick={() => {
                 if (exp > 30) {
-                  push(`That video is ${exp}s — Extend inputs must be ≤ 30s.`, { icon: "!", tone: "danger" });
+                  pushErr(`That video is ${exp}s — Extend inputs must be ≤ 30s.`);
                   return;
                 }
                 updateActive((d) => { d.gen.extendVideo = v.id; });
@@ -308,7 +302,7 @@ function AdvancedDialog({ close }: { close: () => void }) {
             onClick={() => {
               const parsed = advancedFormSchema.safeParse({ seed, person, negativePrompt: negative });
               if (!parsed.success) {
-                push("Invalid advanced settings", { icon: "!", tone: "danger" });
+                pushErr("Invalid advanced settings");
                 return;
               }
               updateActive((d) => { d.gen.seed = parsed.data.seed; d.gen.person = parsed.data.person; d.gen.negativePrompt = parsed.data.negativePrompt; });
@@ -342,10 +336,10 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const srcVideo = v.mode === "extend" && v.inputs.extendVideo
     ? project.library.find((x) => x.id === v.inputs.extendVideo)
     : undefined;
-  const displayDur = expectedDur(v, (id) => project.library.find((x) => x.id === id));
+  const displayDur = expectedDurOf(v, project.library);
   const cfg: [string, string][] = [
     ["Model", (v.model === "import" ? "Upload" : m.label) + (m.retires && v.model !== "import" ? " · retires Jun 30" : "")],
-    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDur(srcVideo, (id) => project.library.find((x) => x.id === id)) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
+    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDurOf(srcVideo, project.library) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
     ["Size", fmtBytes(v.size)],
     ["Audio", v.audio ? "On" : "Off"],
     ["Seed", v.seed === "" || v.seed == null ? "random" : String(v.seed)],
@@ -355,7 +349,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
 
   const grab = (which: string, t: number | null) => {
     if (!v.url) {
-      push("No playable file stored for this video.", { icon: "!", tone: "danger" });
+      pushErr("No playable file stored for this video.");
       return;
     }
     push(`Grabbing ${which.toLowerCase()}…`, { icon: "…" });
@@ -369,13 +363,13 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         push(r.ok ? `${which} saved to Elements` : (r.error ?? "Could not save frame"), { icon: r.ok ? "✓" : "!", tone: r.ok ? "ok" : "danger" });
       })
       .catch(() => {
-        push("Live grab blocked by the browser — try playing the video first", { icon: "!", tone: "danger" });
+        pushErr("Live grab blocked by the browser — try playing the video first");
       });
   };
 
   const extend = () => {
     if (displayDur > 30) {
-      push(`That video is ${displayDur}s — Extend inputs must be ≤ 30s (cap 37s total).`, { icon: "!", tone: "danger" });
+      pushErr(`That video is ${displayDur}s — Extend inputs must be ≤ 30s (cap 37s total).`);
       return;
     }
     updateActive((d) => { d.gen.mode = "extend"; d.gen.extendVideo = v.id; });
@@ -386,7 +380,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const reload = () => {
     const r = loadIntoComposer(v.id);
     if (!r.ok) {
-      push(r.error ?? "Cannot reload", { icon: "!", tone: "danger" });
+      pushErr(r.error ?? "Cannot reload");
       return;
     }
     close();
@@ -415,11 +409,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       }
       footer={
         <div className="flex flex-wrap items-center gap-2 w-full">
-          <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-            <span className="font-display font-bold text-[17px] tabular-nums mr-auto">
-              {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
-            </span>
-          </SlateTooltip>
+          <VideoCost v={v} className="font-display font-bold text-[17px] tabular-nums mr-auto" />
           <div className="flex flex-wrap items-center justify-end gap-2 max-w-full">
           {v.status === "success" && (
             <>
@@ -484,11 +474,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       ) : v.status === "pending" ? (
         <div className="rounded-[10px] border slate-hair p-5 text-center">
           <SlateProgress value={v.progress || 5} />
-          <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-            <p className="text-[12.5px] font-bold tabular-nums mt-2">
-              {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
-            </p>
-          </SlateTooltip>
+          <VideoProgress v={v} className="text-[12.5px] font-bold tabular-nums mt-2" />
         </div>
       ) : (
         <div className="rounded-[10px] border slate-hair p-4 text-[12.5px] leading-relaxed" style={{ background: "var(--t-danger-bg)", color: "var(--t-danger-fg)" }}>
@@ -652,25 +638,19 @@ function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => 
     },
   }[mode];
   return (
-    <SlateModal onClose={close}>
-      <h3 className="font-display font-bold text-[16px]">{copy.title}</h3>
-      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">{copy.body}</p>
-      <div className="mt-5 flex gap-2 justify-end">
-        <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
-        <SlateButton
-          variant="danger"
-          onClick={() => {
-            void deleteVideo(videoId).then(() => {
-              push(copy.done, { icon: mode === "delete" ? "🗑" : "✓", tone: "info" });
-              set({ video: "", confirmDel: "" });
-              close();
-            });
-          }}
-        >
-          {copy.action}
-        </SlateButton>
-      </div>
-    </SlateModal>
+    <ConfirmDeleteDialog
+      title={copy.title}
+      body={copy.body}
+      action={copy.action}
+      close={close}
+      confirm={() => {
+        void deleteVideo(videoId).then(() => {
+          push(copy.done, { icon: mode === "delete" ? "🗑" : "✓", tone: "info" });
+          set({ video: "", confirmDel: "" });
+          close();
+        });
+      }}
+    />
   );
 }
 
@@ -699,6 +679,21 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
   const connected = !!yt.token && yt.exp > Date.now();
   const saveYt = (patch: Record<string, unknown>) => setYoutube(v.id, patch);
 
+  // Shared status patch: poll adds identity fields, refresh only refreshes.
+  const ytPatch = (item: any) => {
+    const st = item.status || {};
+    const pd = item.processingDetails || {};
+    const sn = item.statistics || {};
+    return {
+      uploadStatus: st.uploadStatus || "", processingStatus: pd.processingStatus || "",
+      timeLeftMs: pd.timeLeftMs || 0, fail: pd.processingFailureReason || st.failureReason || st.rejectionReason || "",
+      views: sn.viewCount != null ? Number(sn.viewCount) : null,
+      likes: sn.likeCount != null ? Number(sn.likeCount) : null,
+      comments: sn.commentCount != null ? Number(sn.commentCount) : null,
+      privacy: st.privacyStatus || privacy, checkedAt: Date.now(),
+    };
+  };
+
   const poll = (id: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
     const tick = () => {
@@ -707,17 +702,9 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       ytVideoState(tok, id)
         .then((item) => {
           if (!item) return;
-          const st = item.status || {};
-          const pd = item.processingDetails || {};
-          const sn = item.statistics || {};
           const patch = {
-            videoId: id, url: `https://youtu.be/${id}`, title: st.title || title,
-            uploadStatus: st.uploadStatus || "", processingStatus: pd.processingStatus || "",
-            timeLeftMs: pd.timeLeftMs || 0, fail: pd.processingFailureReason || st.failureReason || st.rejectionReason || "",
-            views: sn.viewCount != null ? Number(sn.viewCount) : null,
-            likes: sn.likeCount != null ? Number(sn.likeCount) : null,
-            comments: sn.commentCount != null ? Number(sn.commentCount) : null,
-            privacy: st.privacyStatus || privacy, checkedAt: Date.now(),
+            videoId: id, url: `https://youtu.be/${id}`, title: (item.status || {}).title || title,
+            ...ytPatch(item),
           };
           saveYt(patch);
           setInfo((p) => ({ ...p, ...patch }));
@@ -727,7 +714,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
           }
           if (["failed", "terminated"].includes(patch.processingStatus) || ["failed", "rejected"].includes(patch.uploadStatus)) {
             if (pollRef.current) clearInterval(pollRef.current);
-            push("YouTube processing failed", { icon: "!", tone: "danger", detail: (patch.fail || "").slice(0, 160) });
+            pushErr("YouTube processing failed", (patch.fail || "").slice(0, 160));
           }
         })
         .catch(() => {});
@@ -744,39 +731,29 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
     }
     const tok = useYtAuth.getState().token;
     if (!tok) {
-      push("Connect YouTube first", { icon: "!", tone: "danger" });
+      pushErr("Connect YouTube first");
       return;
     }
     push("Refreshing YouTube status…", { icon: "…" });
     ytVideoState(tok, id)
       .then((item) => {
-        const st = item.status || {};
-        const pd = item.processingDetails || {};
-        const sn = item.statistics || {};
-        const patch = {
-          uploadStatus: st.uploadStatus || "", processingStatus: pd.processingStatus || "",
-          timeLeftMs: pd.timeLeftMs || 0, fail: pd.processingFailureReason || st.failureReason || st.rejectionReason || "",
-          views: sn.viewCount != null ? Number(sn.viewCount) : null,
-          likes: sn.likeCount != null ? Number(sn.likeCount) : null,
-          comments: sn.commentCount != null ? Number(sn.commentCount) : null,
-          privacy: st.privacyStatus || privacy, checkedAt: Date.now(),
-        };
+        const patch = ytPatch(item);
         saveYt(patch);
         setInfo((p) => ({ ...p, ...patch }));
         push("YouTube status updated", { icon: "▶" });
       })
-      .catch((e) => push("Refresh failed", { icon: "!", tone: "danger", detail: String((e as Error).message || e).slice(0, 120) }));
+      .catch((e) => pushErr("Refresh failed", errOf(e, 120)));
   };
 
   const start = async () => {
     if (busy) return;
     if (!v.url) {
-      push("No playable file stored for this video — regenerate or re-upload it.", { icon: "!", tone: "danger" });
+      pushErr("No playable file stored for this video — regenerate or re-upload it.");
       return;
     }
     const parsed = ytPublishSchema.safeParse({ title, description: desc, privacy });
     if (!parsed.success) {
-      push(parsed.error.issues[0]?.message ?? "Invalid input", { icon: "!", tone: "danger" });
+      pushErr(parsed.error.issues[0]?.message ?? "Invalid input");
       return;
     }
     setBusy(true);
@@ -785,10 +762,8 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       let tok = useYtAuth.getState().token;
       const exp = useYtAuth.getState().exp;
       if (!tok || exp <= Date.now()) {
-        const c = await ytConnect(project.settings.ytClientId || "");
-        const { ytFetchChannel } = await import("@/lib/youtube");
-        const channel = await ytFetchChannel(c.token);
-        useYtAuth.getState().setAuth(c.token, c.exp, channel);
+        const c = await ytConnectWithChannel(project.settings.ytClientId || "");
+        useYtAuth.getState().setAuth(c.token, c.exp, c.channel);
         tok = c.token;
       }
       const res = await fetch(authedMediaUrl(v.url));
@@ -812,7 +787,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
     } catch (e) {
       const msg = String((e as Error).message || e).slice(0, 220);
       saveYt({ state: "error", fail: msg });
-      push("YouTube upload failed", { icon: "!", tone: "danger", detail: msg.slice(0, 120) });
+      pushErr("YouTube upload failed", msg.slice(0, 120));
     } finally {
       setBusy(false);
     }

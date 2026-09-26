@@ -1,21 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
-import { Check, Download, KeyRound, LogOut, Moon, Sun, MonitorPlay, Upload } from "lucide-react";
+import { Check, Download, KeyRound, Loader2, LogOut, Moon, Sun, MonitorPlay, Trash2, Upload } from "lucide-react";
 import { YT_CATS, YT_PRIVS } from "@/lib/catalog";
-import { api } from "@/lib/api";
+import { ago, fmtBytes } from "@/lib/format";
+import { backupFileUrl, errOf } from "@/lib/api";
 import { rateFor } from "@/lib/pricing";
-import { ytCatLabel, ytConnect } from "@/lib/youtube";
+import { ytCatLabel, ytConnectWithChannel } from "@/lib/youtube";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts, useYtAuth } from "@/stores/use-ui";
+import { pushErr, useBackup, useToasts, useYtAuth } from "@/stores/use-ui";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton } from "@/components/slate/button";
 import { PageHead, SlateCardHeader, SlateField, SlateLabel, SlateTextarea, SlateToggle } from "@/components/slate/core";
 import { SlateCard } from "@/components/slate/core";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
-import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { ConfirmDeleteDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 
 function RateCell({ tier, res, audio }: { tier: string; res: string; audio: boolean }) {
   // Representative model per tier for the rate lookup (rates are tier+res based).
@@ -72,7 +73,7 @@ export function SettingsView() {
         setSa("");
       },
       (e) => {
-        push("Service account save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
+        pushErr("Service account save failed", errOf(e, 160));
       },
     ).finally(() => setSaBusy(false));
   };
@@ -88,7 +89,7 @@ export function SettingsView() {
         push("Bucket connected · Off", { icon: "✓", detail: loc ? `Reachable · ${loc}` : "Verified — flip the toggle to use it" });
       },
       (e) => {
-        push("Bucket save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
+        pushErr("Bucket save failed", errOf(e, 160));
       },
     ).finally(() => setBktBusy(false));
   };
@@ -100,7 +101,7 @@ export function SettingsView() {
     const patch = bucketOn ? { useBucket: false } : { bucket: bucketId, useBucket: true };
     void saveSettings(patch).then(
       () => push(bucketOn ? "Bucket off" : `Bucket on — outputs save to gs://${bucketId}`, { icon: "✓", tone: bucketOn ? "info" : "ok" }),
-      (e) => push("Bucket toggle failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
+      (e) => pushErr("Bucket toggle failed", errOf(e, 160)),
     ).finally(() => setTogBusy(false));
   };
   const dropBucket = () => {
@@ -108,13 +109,13 @@ export function SettingsView() {
     setBktBusy(true);
     void saveSettings({ bucket: "", useBucket: false }).then(
       () => push("Bucket disconnected", { icon: "✓", tone: "info" }),
-      (e) => push("Disconnect failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+      (e) => pushErr("Disconnect failed", errOf(e, 140)),
     ).finally(() => setBktBusy(false));
   };
   const saveYt = () => {
     void saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
       () => push("YouTube settings saved", { icon: "✓" }),
-      (e) => push("Save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+      (e) => pushErr("Save failed", errOf(e, 140)),
     );
   };
   const ytGo = async () => {
@@ -123,18 +124,16 @@ export function SettingsView() {
     try {
       await saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat });
     } catch (e) {
-      push("Save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) });
+      pushErr("Save failed", errOf(e, 140));
       setYtBusy(false);
       return;
     }
     try {
-      const { token, exp } = await ytConnect(ytId);
-      const { ytFetchChannel } = await import("@/lib/youtube");
-      const channel = await ytFetchChannel(token);
+      const { token, exp, channel } = await ytConnectWithChannel(ytId);
       useYtAuth.getState().setAuth(token, exp, channel);
       push(channel ? `Connected as ${channel}` : "YouTube connected", { icon: "▶" });
     } catch (e) {
-      push("YouTube connect failed", { icon: "!", tone: "danger", detail: String((e as Error).message || e).slice(0, 140) });
+      pushErr("YouTube connect failed", errOf(e, 140));
     } finally {
       setYtBusy(false);
     }
@@ -247,7 +246,7 @@ export function SettingsView() {
                       setSaBusy(true);
                       void saveSettings({ saJson: "" }).then(
                         () => push("Service account disconnected", { icon: "✓", tone: "info" }),
-                        (e) => push("Disconnect failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+                        (e) => pushErr("Disconnect failed", errOf(e, 140)),
                       ).finally(() => setSaBusy(false));
                     }}
                   >
@@ -381,61 +380,86 @@ export function SettingsView() {
 function BackupCard() {
   const push = useToasts((s) => s.push);
   const reloadProjects = useStudio((s) => s.reloadProjects);
-  const projects = useStudio((s) => s.projects);
-  const totals = useStudio((s) => s.totals);
-  // All scopes default off: a bare backup is projects + settings only.
-  const [incElements, setIncElements] = useState(false);
-  const [incGenerated, setIncGenerated] = useState(false);
-  const [incUploads, setIncUploads] = useState(false);
-  // "all" or one project id — per-project archives stay far under the 1 GB cap.
-  const [scopeProject, setScopeProject] = useState("all");
-  const [busy, setBusy] = useState(false);
-  const [inspect, setInspect] = useState<{
-    file: File;
-    exportedAt: string;
-    counts: Record<string, number>;
-  } | null>(null);
+  const files = useBackup((s) => s.files);
+  const busy = useBackup((s) => s.busy);
+  const refresh = useBackup((s) => s.refresh);
+  const buildNow = useBackup((s) => s.buildNow);
+  const upload = useBackup((s) => s.upload);
+  const remove = useBackup((s) => s.remove);
+  const restore = useBackup((s) => s.restore);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  // AbortController behind the Cancel button (upload is the only long op here).
+  const uploadCtrl = useRef<AbortController | null>(null);
 
-  const download = () => {
-    if (busy) return;
-    setBusy(true);
-    void api.downloadBackup({
-      elements: incElements, generated: incGenerated, uploads: incUploads,
-      ...(scopeProject !== "all" ? { projectId: scopeProject } : {}),
-    }).then(
-      ({ blob, filename }) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-        push("Backup downloaded", { icon: "✓", detail: filename });
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const busyMsg = busy ? (busy.kind === "upload" ? busy.label : busy.kind === "build" ? "Packing everything…" : "Restoring…") : "";
+
+  const onBuild = () => {
+    void buildNow().then(
+      (row) => {
+        if (row) push("Backup packed", { icon: "✓", detail: row.filename });
+        else pushErr("Backup failed");
       },
-      (e) => push("Backup failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
-    ).finally(() => setBusy(false));
+    );
   };
 
-  const restore = (f: File) => {
-    if (busy) return;
-    setBusy(true);
-    // Step 1: inspect only — the confirm dialog shows what's inside.
-    void api.inspectBackup(f).then(
-      ({ manifest, counts }) => {
-        setInspect({ file: f, exportedAt: manifest.exportedAt, counts });
+  const onUpload = (f: File) => {
+    const ctrl = new AbortController();
+    uploadCtrl.current = ctrl;
+    void upload(f, ctrl.signal).then(
+      (row) => {
+        uploadCtrl.current = null;
+        if (row) push("Backup stored", { icon: "✓", detail: row.filename });
+        else if (ctrl.signal.aborted) push("Upload cancelled", { icon: "×", tone: "info" });
+        else pushErr("Upload failed — not a readable backup");
       },
-      (e) => push("Cannot read backup file", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
-    ).finally(() => setBusy(false));
+    );
+  };
+
+  const onDownload = (id: string, filename: string) => {
+    const a = document.createElement("a");
+    a.href = backupFileUrl(id);
+    a.download = filename;
+    a.click();
+  };
+
+  const onDelete = (id: string) => {
+    setDeleteId(id);
+  };
+
+  const confirmDelete = () => {
+    if (!deleteId || busy) return;
+    const id = deleteId;
+    setDeleteId(null);
+    void remove(id).then(
+      (ok) => {
+        if (ok) push("Backup deleted", { icon: "🗑", tone: "info" });
+        else pushErr("Delete failed");
+      },
+    );
+  };
+
+  const onRestore = (id: string) => {
+    const row = useBackup.getState().files.find((f) => f.id === id);
+    if (!row) return;
+    setConfirmId(id);
   };
 
   const confirmRestore = () => {
-    const cur = inspect;
-    if (!cur || busy) return;
-    setBusy(true);
-    // Step 2: real import after explicit confirm.
-    void api.restoreBackup(cur.file).then(
+    if (!confirmId || busy) return;
+    const id = confirmId;
+    setConfirmId(null);
+    void restore(id).then(
       async (rep) => {
-        setInspect(null);
+        if (!rep) {
+          pushErr("Restore failed");
+          return;
+        }
         const imp = rep.imported ?? {};
         const total = Object.values(imp).reduce((a, n) => a + (Number(n) || 0), 0);
         await reloadProjects().catch(() => {});
@@ -444,81 +468,94 @@ function BackupCard() {
           detail: `projects ${imp.projects ?? 0} · elements ${imp.elements ?? 0} · library ${imp.library ?? 0} · media ${imp.media ?? 0}`,
         });
       },
-      (e) => push("Restore failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
-    ).finally(() => setBusy(false));
+    );
   };
+
+  const confirmRow = confirmId ? files.find((f) => f.id === confirmId) : undefined;
 
   return (
     <>
       <SlateCard>
         <SlateCardHeader>
-          <h3 className="font-display font-bold text-[13.5px]">Backup & restore</h3>
+          <h3 className="font-display font-bold text-[13.5px]">Backups</h3>
           <SlateBadge tone="draft">tar</SlateBadge>
         </SlateCardHeader>
       <div className="p-4 space-y-3">
         <p className="text-[11.5px] text-muted leading-relaxed">
-          Projects + connection settings are always included. Toggle what else goes in — all off by default.
-          Over 1 GB total? Back up one project at a time.
+          One click packs everything. Uploaded files are stored too — download, restore, or delete any of them. Restoring merges; existing records are skipped.
         </p>
-        <div>
-          <SlateLabel>Project scope</SlateLabel>
-          <SlateDropdown
-            label={scopeProject === "all" ? "All projects" : (projects.find((p) => p.id === scopeProject)?.name ?? scopeProject)}
-            btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
-            menu={(close) => (
-              <>
-                <SlateOption active={scopeProject === "all"} sub="everything" onPick={() => setScopeProject("all")} onClose={close}>
-                  All projects
-                </SlateOption>
-                {projects.map((p) => {
-                  const n = totals?.byProject.find((b) => b.projectId === p.id)?.videos ?? p.library.length;
-                  return (
-                    <SlateOption key={p.id} active={scopeProject === p.id} sub={`${n} videos`} onPick={() => setScopeProject(p.id)} onClose={close}>
-                      {p.name}
-                    </SlateOption>
-                  );
-                })}
-              </>
-            )}
-          />
-        </div>
-        {([
-          ["Elements (faces, places, props, stills)", incElements, setIncElements],
-          ["Generated library + videos", incGenerated, setIncGenerated],
-          ["Uploaded library + files", incUploads, setIncUploads],
-        ] as const).map(([label, on, flip]) => (
-          <div key={label} className="flex items-center justify-between gap-3">
-            <p className="text-[13px] font-bold">{label}</p>
-            <SlateToggle on={on} label={label} onFlip={() => flip(!on)} />
-          </div>
-        ))}
-        <div className="flex gap-2 flex-wrap pt-1">
-          <SlateButton variant="primary" size="sm" disabled={busy} onClick={download}>
-            <Download className="size-3.5" /> {busy ? "Working…" : "Download backup"}
+        <div className="flex gap-2 flex-wrap">
+          <SlateButton variant="primary" size="sm" disabled={!!busy} onClick={onBuild}>
+            <Download className="size-3.5" /> {busy?.kind === "build" ? "Packing…" : "Backup now"}
           </SlateButton>
           <label className="slate-btn slate-btn-ghost slate-btn-sm cursor-pointer">
-            <Upload className="size-3.5" /> Restore
+            <Upload className="size-3.5" /> Upload
             <input
               type="file"
               accept=".tar,.tar.gz,.tgz,application/gzip,application/x-tar"
               className="hidden"
-              disabled={busy}
+              disabled={!!busy}
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) restore(f);
+                if (f) onUpload(f);
                 e.target.value = "";
               }}
             />
           </label>
         </div>
+        {busy && (
+          <p className="text-[12px] text-muted flex items-center gap-2">
+            <Loader2 className="size-3.5 animate-spin" /> {busyMsg} safe to leave this page.
+            {busy.kind === "upload" && (
+              <SlateButton variant="ghost" size="sm" onClick={() => uploadCtrl.current?.abort()}>
+                Cancel
+              </SlateButton>
+            )}
+          </p>
+        )}
+        {files.length === 0 ? (
+          <p className="text-[12.5px] text-muted slate-card p-4 text-center">No backups yet — pack one or upload a file.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {files.map((f) => (
+              <div key={f.id} className="rounded-[8px] border slate-hair p-2.5" style={{ background: "var(--surface-2)" }}>
+                <p className="text-[12.5px] font-semibold truncate" title={f.filename}>{f.filename}</p>
+                <p className="text-[11px] font-mono text-muted mt-0.5">
+                  {ago(Date.parse(f.created_at) || 0)} · {fmtBytes(f.bytes)}{(f.counts.library ?? 0) > 0 ? ` · ${f.counts.library} videos` : ""}{(f.counts.media ?? 0) > 0 ? ` · ${f.counts.media} files` : ""}
+                </p>
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  <SlateButton variant="ghost" size="sm" disabled={!!busy} onClick={() => onDownload(f.id, f.filename)}>
+                    <Download className="size-3.5" /> Download
+                  </SlateButton>
+                  <SlateButton variant="ghost" size="sm" disabled={!!busy} onClick={() => onRestore(f.id)}>
+                    <Upload className="size-3.5" /> Restore
+                  </SlateButton>
+                  <SlateButton variant="ghost" size="sm" disabled={!!busy} onClick={() => onDelete(f.id)}>
+                    <Trash2 className="size-3.5" /> Delete
+                  </SlateButton>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       </SlateCard>
-      {inspect && (
+      {confirmRow && (
         <RestoreConfirmDialog
-          info={inspect}
-          busy={busy}
-          close={() => setInspect(null)}
+          info={{ exportedAt: confirmRow.created_at, counts: confirmRow.counts }}
+          busy={!!busy}
+          close={() => setConfirmId(null)}
           confirm={confirmRestore}
+        />
+      )}
+      {deleteId && (
+        <ConfirmDeleteDialog
+          title="Delete this backup?"
+          body={`${files.find((f) => f.id === deleteId)?.filename ?? "This file"} will be removed from the server. This cannot be undone.`}
+          icon={<Trash2 className="size-3.5" />}
+          busy={!!busy}
+          close={() => setDeleteId(null)}
+          confirm={confirmDelete}
         />
       )}
     </>

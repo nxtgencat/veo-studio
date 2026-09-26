@@ -1,38 +1,12 @@
-// Server-side frame handling with MediaBunny (no ffmpeg).
-// Headless reality: Bun has no WebCodecs VideoDecoder, so pixel decoding
-// (VideoSampleSink) only works in runtimes that provide it. Demuxing +
-// metadata + keyframe index (EncodedPacketSink) works everywhere, and this
-// endpoint always returns that. Pixel thumbnails are best-effort: when a
-// decoder exists we return base64 PNGs (hand-rolled encoder, zero native
-// deps); otherwise `thumbnailStatus` explains why `thumbnails` is empty.
+// Server-side video probing with MediaBunny (no ffmpeg): demux-only
+// metadata (duration, dimensions, codec) that works headless in Bun,
+// plus a hand-rolled PNG encoder (zero native deps) kept for tests.
 
-import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input, VideoSample, VideoSampleSink } from "mediabunny";
+import { ALL_FORMATS, BufferSource, Input } from "mediabunny";
 // NOTE: PNG IDAT needs zlib-wrapped deflate. Bun.deflateSync emits raw
 // deflate (verified: node inflateSync rejects it, even with windowBits),
 // so node:zlib stays here deliberately — correctness over API purity.
 import { deflateSync } from "node:zlib";
-
-export type ExtractOptions = {
-  timestamps?: number[];
-  count?: number;
-};
-
-export type FrameIndexEntry = {
-  timestamp: number;
-  type: string;
-  byteSize: number;
-};
-
-export type ExtractResult = {
-  durationSeconds: number;
-  width: number;
-  height: number;
-  codec: string | null;
-  keyframeCount: number;
-  frames: FrameIndexEntry[];
-  thumbnails: { timestamp: number; pngBase64: string; width: number; height: number }[];
-  thumbnailStatus: "ok" | "decoder-unavailable-in-this-runtime" | "no-samples";
-};
 
 function crc32(buf: Uint8Array): number {
   // Standard ISO-HDLC CRC32 (verified: Bun.hash.crc32("123456789") === 0xcbf43926).
@@ -107,88 +81,20 @@ export async function probeVideoMetadata(bytes: Uint8Array, _mimeType: string): 
   }
 }
 
+/** Delivered-duration probe (demux-only, 0.1s). Null when undecodable — never throws. */
+export async function probeDuration(bytes: Uint8Array, mime: string): Promise<number | null> {
+  try {
+    const meta = await probeVideoMetadata(bytes, mime);
+    return meta.durationSeconds > 0 ? Math.round(meta.durationSeconds * 10) / 10 : null;
+  } catch {
+    return null;
+  }
+}
+
 export function videoMetaToResAspect(width: number, height: number): { res: "720p" | "1080p" | "4K"; aspect: "16:9" | "9:16" } {
   const long = Math.max(width, height);
   return {
     res: long >= 3000 ? "4K" : long >= 1500 ? "1080p" : "720p",
     aspect: width >= height ? "16:9" : "9:16",
   };
-}
-export async function extractFrames(
-  bytes: Uint8Array,
-  _mimeType: string,
-  opts: ExtractOptions = {},
-): Promise<ExtractResult> {
-  const input = new Input({ source: new BufferSource(bytes), formats: ALL_FORMATS });
-  try {
-    const track = await input.getPrimaryVideoTrack();
-    if (!track) throw new Error("NO_VIDEO_TRACK: input contains no decodable video track");
-    const duration = await input.computeDuration();
-    const width = await track.getDisplayWidth();
-    const height = await track.getDisplayHeight();
-
-    // Keyframe/packet index — pure demux, works headless.
-    const packetSink = new EncodedPacketSink(track);
-    const frames: FrameIndexEntry[] = [];
-    let keyframes = 0;
-    for await (const p of packetSink.packets(undefined, undefined, { metadataOnly: true })) {
-      if (p.type === "key") keyframes++;
-      frames.push({ timestamp: Math.round(p.timestamp * 1000) / 1000, type: p.type, byteSize: p.byteLength });
-      if (frames.length >= 200) break;
-    }
-
-    // Pixel thumbnails — needs WebCodecs; degrade gracefully.
-    let timestamps = opts.timestamps;
-    if (!timestamps || timestamps.length === 0) {
-      const n = Math.min(Math.max(opts.count ?? 3, 1), 10);
-      timestamps = Array.from({ length: n }, (_, i) =>
-        duration > 0 ? (duration * (i + 0.5)) / n : i,
-      );
-    }
-    const thumbnails: ExtractResult["thumbnails"] = [];
-    let thumbnailStatus: ExtractResult["thumbnailStatus"] = "no-samples";
-    try {
-      const sink = new VideoSampleSink(track);
-      for await (const sample of sink.samplesAtTimestamps(timestamps)) {
-        try {
-          if (!sample) continue;
-          const w = sample.displayWidth ?? sample.codedWidth;
-          const h = sample.displayHeight ?? sample.codedHeight;
-          type CopyOpts = Parameters<VideoSample["copyTo"]>[1];
-          const rgbaOpts = { format: "RGBA" } as unknown as CopyOpts;
-          const size = sample.allocationSize(rgbaOpts);
-          const rgba = new Uint8Array(size);
-          await sample.copyTo(rgba, rgbaOpts);
-          const png = encodePngRgba(rgba, w, h);
-          thumbnails.push({
-            timestamp: sample.timestamp,
-            pngBase64: png.toBase64(),
-            width: w,
-            height: h,
-          });
-        } finally {
-          sample?.close();
-        }
-      }
-      thumbnailStatus = thumbnails.length > 0 ? "ok" : "no-samples";
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-      thumbnailStatus = msg.includes("VideoDecoder is not available")
-        ? "decoder-unavailable-in-this-runtime"
-        : "no-samples";
-    }
-
-    return {
-      durationSeconds: Math.round(duration * 100) / 100,
-      width,
-      height,
-      codec: (await track.getCodec()) ?? null,
-      keyframeCount: keyframes,
-      frames,
-      thumbnails,
-      thumbnailStatus,
-    };
-  } finally {
-    input.dispose();
-  }
 }

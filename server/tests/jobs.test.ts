@@ -10,6 +10,7 @@ process.env.MEDIA_DIR = join(tmpdir(), `veo-media-jobs-${process.pid}`);
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { app } from "../src/routes.ts";
 import { cancelJob, createJob, getJob, setDriverForTests, settleBackground } from "../src/jobs.ts";
+import { makeSaJson, waitForJob } from "./helpers.ts";
 import type { JobInput } from "../src/validation.ts";
 
 const base: JobInput = {
@@ -29,23 +30,6 @@ function seedProject() {
   getDb()
     .query("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?,?,?,?)")
     .run("prj_test", "Test", new Date().toISOString(), new Date().toISOString());
-}
-
-async function makeSaJson(email: string): Promise<string> {
-  const pair = await crypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
-    true,
-    ["sign", "verify"],
-  );
-  const der = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
-  let bin = "";
-  for (const b of der) bin += String.fromCharCode(b);
-  return JSON.stringify({
-    type: "service_account",
-    project_id: "p",
-    private_key: `-----BEGIN PRIVATE KEY-----\n${btoa(bin)}\n-----END PRIVATE KEY-----\n`,
-    client_email: email,
-  });
 }
 
 beforeEach(() => {
@@ -75,9 +59,7 @@ describe("async job flow", () => {
     expect(["queued", "running"]).toContain(early.status);
 
     // wait for background completion
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "succeeded");
     const done = getJob(r.jobId) as any;
     expect(done.status).toBe("succeeded");
     expect(done.progress).toBe(100);
@@ -141,9 +123,7 @@ describe("async job flow", () => {
     const r = createJob({ ...base, mode: "i2v", imageAssetId: "el_still" }, "key-i2v");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "succeeded");
     expect((getJob(r.jobId) as any).status).toBe("succeeded");
     expect(seen?.imageBytes).toBe(PNG_1PX);
     expect(seen?.imageMimeType).toBe("image/png");
@@ -174,9 +154,7 @@ describe("async job flow", () => {
       const r = createJob(base, "key-arc");
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
-        await Bun.sleep(20);
-      }
+      await waitForJob(r.jobId, "succeeded");
       const lib = getDb().query("SELECT * FROM library WHERE job_id=?").get(r.jobId) as any;
       expect(lib.video_url.startsWith("/media/")).toBe(true);
       expect(lib.gcs_uri).toBe("gs://b/veo/out.mp4");
@@ -215,9 +193,7 @@ describe("async job flow", () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "failed");
     expect((getJob(r.jobId) as any).status).toBe("failed");
     expect((getJob(r.jobId) as any).error).toContain("FRAMES_ASPECT_MISMATCH");
     setDriverForTests(null);
@@ -236,9 +212,7 @@ describe("async job flow", () => {
     const r = createJob(base, "key-rai");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "failed");
     const row = getJob(r.jobId) as any;
     expect(row.status).toBe("failed");
     expect(row.error).toContain("RAI_FILTERED");
@@ -317,9 +291,7 @@ describe("async job flow", () => {
     const r = createJob(base, "key-gone");
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "failed");
     const failed = getJob(r.jobId) as any;
     expect(failed.status).toBe("failed");
     expect(failed.error).toContain("VERTEX_OP_GONE");
@@ -486,9 +458,7 @@ describe("async job flow", () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "succeeded"; i++) {
-      await Bun.sleep(20);
-    }
+    await waitForJob(r.jobId, "succeeded");
     expect((getJob(r.jobId) as any).status).toBe("succeeded");
     expect(seen).toBeTruthy();
     expect(seen.sourceVideoBytes).toBe("AAAABBBB");

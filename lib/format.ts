@@ -2,7 +2,6 @@
 import type { VideoItem } from "@/lib/schemas";
 
 export const money = (n: number) => `$${(Number(n) || 0).toFixed(2)}`;
-export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 /** Elapsed clock: 45s → "0:45", 135s → "2:15". */
 export function fmtElapsed(ms: number): string {
@@ -31,11 +30,6 @@ export function fmtDurPair(expected: number, actual?: number | null): string {
   if (actual == null || !(actual > 0) || Math.abs(actual - e) < 0.5) return `${e}s`;
   const a = Number.isInteger(actual) ? String(actual) : actual.toFixed(1);
   return `${e}s → ${a}s`;
-}
-
-/** True when the delivered file meaningfully differs from the request. */
-export function hasDurGap(expected: number, actual?: number | null): boolean {
-  return actual != null && actual > 0 && Math.abs(actual - (Number(expected) || 0)) >= 0.5;
 }
 
 /** Disk size: 29.7 MB, 800 KB, 0 → "—". */

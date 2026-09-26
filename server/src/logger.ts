@@ -7,7 +7,3 @@ export const logger = pino({
       ? undefined
       : { target: "pino-pretty", options: { colorize: false } },
 });
-
-export function childLogger(bindings: Record<string, unknown>) {
-  return logger.child(bindings);
-}

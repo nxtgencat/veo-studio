@@ -2,22 +2,24 @@
 // submission + polling. Driver is injectable so bun:test can verify the
 // lifecycle without touching the network; production driver is real Vertex.
 
-import { getDb, nowIso } from "./db.ts";
+import { getDb, nowIso, projectExists } from "./db.ts";
 import { getModel } from "./capabilities.ts";
 import { getSettings, resolveAuth } from "./auth.ts";
 import { downloadGcsUri } from "./gcs.ts";
-import { elementImageBytes, IMAGE_MAX_BYTES } from "./images.ts";
+import { elementImageBytes } from "./images.ts";
 import { fallbackEtaMs, measuredEtaMs } from "./pricing.ts";
 import { getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
-import { probeVideoMetadata } from "./frames.ts";
+import { probeDuration } from "./frames.ts";
 import { estimateCost } from "./pricing.ts";
 import { validateJob, type JobInput } from "./validation.ts";
-import { childLogger } from "./logger.ts";
+import { logger } from "./logger.ts";
 import * as vertex from "./vertex.ts";
 
-const log = childLogger({ module: "jobs" });
+const log = logger.child({ module: "jobs" });
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+// Inline extend source bytes ride the request only (≤20 MB raw, parity with
+// input validation) — never persisted: Base64 blobs don't belong in rows.
+const INLINE_SOURCE_MAX_BYTES = 20 * 1024 * 1024;
 
 export type Driver = {
   submit: (p: vertex.VertexSubmitParams) => Promise<string>;
@@ -48,6 +50,15 @@ export async function settleBackground(): Promise<void> {
   while (inflight.size > 0) {
     await Promise.allSettled([...inflight]);
   }
+}
+
+// Never let a background crash surface as an unhandled rejection
+// (e.g. DB reset under test teardown while a poll is in flight).
+function track(task: Promise<unknown>, jobId: string, what: string): void {
+  inflight.add(task);
+  void task
+    .catch((e) => log.error({ jobId, err: String(e) }, what))
+    .finally(() => inflight.delete(task));
 }
 
 /** Per-project driver: SA auth (default) or env creds, token minted per call (cached). */
@@ -95,8 +106,9 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
     .get(input.projectId, idempotencyKey) as { id: string } | null;
   if (existing) return { ok: true, jobId: existing.id, deduped: true };
 
-  const project = db.query("SELECT id FROM projects WHERE id = ?").get(input.projectId);
-  if (!project) return { ok: false, code: "PROJECT_NOT_FOUND", message: `No project ${input.projectId}` };
+  if (!projectExists(input.projectId)) {
+    return { ok: false, code: "PROJECT_NOT_FOUND", message: `No project ${input.projectId}` };
+  }
 
   const model = getModel(input.model)!;
   const cost = estimateCost({
@@ -138,11 +150,7 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
   }
   // Never let a background crash surface as an unhandled rejection
   // (e.g. DB reset under test teardown while a poll is in flight).
-  const task = runInBackground(id);
-  inflight.add(task);
-  void task
-    .catch((e) => log.error({ jobId: id, err: String(e) }, "background task crashed"))
-    .finally(() => inflight.delete(task));
+  track(runInBackground(id), id, "background task crashed");
   return { ok: true, jobId: id, deduped: false };
 }
 
@@ -285,11 +293,7 @@ export async function recoverInterrupted(): Promise<{ resumed: number; expired: 
     if (r.vertex_operation) {
       db.query("UPDATE jobs SET status='queued', updated_at=? WHERE id=?").run(nowIso(), r.id);
       log.info({ jobId: r.id, op: r.vertex_operation }, "resuming interrupted job");
-      const task = runInBackground(r.id, r.vertex_operation);
-      inflight.add(task);
-      void task
-        .catch((e) => log.error({ jobId: r.id, err: String(e) }, "recovered task crashed"))
-        .finally(() => inflight.delete(task));
+      track(runInBackground(r.id, r.vertex_operation), r.id, "recovered task crashed");
       resumed++;
     } else {
       failJob(
@@ -362,7 +366,7 @@ async function resolveExtendSource(
       if (mid) {
         const file = getMedia(mid);
         if (file) {
-          if (file.bytes > IMAGE_MAX_BYTES) return { diskTooBig: file.bytes };
+          if (file.bytes > INLINE_SOURCE_MAX_BYTES) return { diskTooBig: file.bytes };
           const raw = await Bun.file(file.path).bytes();
           return { bytes: raw.toBase64(), mime: file.mime };
         }
@@ -502,19 +506,10 @@ async function materializeOutput(
   httpsUris: string[],
   inline?: { base64: string; mime: string },
 ): Promise<{ url: string; actualDuration: number | null }> {
-  const probe = async (bytes: Uint8Array, mime: string): Promise<number | null> => {
-    try {
-      const meta = await probeVideoMetadata(bytes, mime);
-      return meta.durationSeconds > 0 ? Math.round(meta.durationSeconds * 10) / 10 : null;
-    } catch {
-      return null;
-    }
-  };
   // Bearer-download an https output URL (storage download links need it;
   // signed URLs simply ignore the header).
-  const fetchHttps = async (url: string): Promise<{ bytes: Uint8Array; mime: string } | null> => {
+  const fetchHttps = async (url: string, token: string): Promise<{ bytes: Uint8Array; mime: string } | null> => {
     try {
-      const token = await resolveAuth(projectId).then((a) => a.getToken());
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) return null;
       const bytes = new Uint8Array(await res.arrayBuffer());
@@ -525,24 +520,25 @@ async function materializeOutput(
     }
   };
   try {
+    // One token per archival (was minted separately per branch).
+    const token = await resolveAuth(projectId).then((a) => a.getToken());
     if (gsUri) {
-      const token = await resolveAuth(projectId).then((a) => a.getToken());
       const { bytes, mime } = await downloadGcsUri(gsUri, token);
       const saved = await saveMedia(bytes, mime);
-      return { url: saved.url, actualDuration: await probe(bytes, mime) };
+      return { url: saved.url, actualDuration: await probeDuration(bytes, mime) };
     }
     for (const url of httpsUris.slice(0, 4)) {
-      const hit = await fetchHttps(url);
+      const hit = await fetchHttps(url, token);
       if (hit) {
         const saved = await saveMedia(hit.bytes, hit.mime);
-        return { url: saved.url, actualDuration: await probe(hit.bytes, hit.mime) };
+        return { url: saved.url, actualDuration: await probeDuration(hit.bytes, hit.mime) };
       }
     }
     if (inline) {
       const raw = Uint8Array.fromBase64(inline.base64);
       if (raw.length > 0 && raw.length <= MEDIA_MAX_BYTES) {
         const saved = await saveMedia(raw, inline.mime);
-        return { url: saved.url, actualDuration: await probe(raw, inline.mime) };
+        return { url: saved.url, actualDuration: await probeDuration(raw, inline.mime) };
       }
     }
   } catch (e: any) {

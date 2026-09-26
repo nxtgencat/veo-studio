@@ -45,7 +45,7 @@ export function useQueryState<T extends Record<string, string>>(defaults: T) {
   const state = useMemo(() => parseParams(search, defaults), [search, defaults]);
 
   const set = useCallback(
-    (patch: Partial<T>, opts?: { replace?: boolean }) => {
+    (patch: Partial<T>) => {
       const next = new URLSearchParams(search.toString());
       for (const [k, v] of Object.entries(patch)) {
         if (v == null || v === "" || v === (defaults as Record<string, string>)[k]) next.delete(k);
@@ -57,19 +57,12 @@ export function useQueryState<T extends Record<string, string>>(defaults: T) {
     [router, pathname, search, defaults],
   );
 
-  const clear = useCallback(
-    (keys?: (keyof T)[]) => {
-      const next = new URLSearchParams(search.toString());
-      if (!keys) {
-        for (const k of Object.keys(defaults)) next.delete(k);
-      } else {
-        for (const k of keys) next.delete(k as string);
-      }
-      const qs = next.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [router, pathname, search, defaults],
-  );
+  const clear = useCallback(() => {
+    const next = new URLSearchParams(search.toString());
+    for (const k of Object.keys(defaults)) next.delete(k);
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [router, pathname, search, defaults]);
 
-  return { state, set, clear, search };
+  return { state, set, clear };
 }

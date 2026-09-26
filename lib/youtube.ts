@@ -5,12 +5,10 @@
 export const YT_SCOPES =
   "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
 
+import { YT_CATS } from "@/lib/catalog";
+
 export function ytCatLabel(id: string): string {
-  const map: Record<string, string> = {
-    "22": "People & Blogs", "28": "Science & Tech", "24": "Entertainment",
-    "27": "Education", "10": "Music", "17": "Sports",
-  };
-  return map[id] ?? "—";
+  return YT_CATS.find((c) => c.id === id)?.label ?? "—";
 }
 
 async function ytEnsureGis(): Promise<boolean> {
@@ -60,6 +58,13 @@ export async function ytConnect(clientId: string): Promise<{ token: string; exp:
       reject(e);
     }
   });
+}
+
+/** Connect + resolve channel name in one step (settings + publish flows). */
+export async function ytConnectWithChannel(clientId: string): Promise<{ token: string; exp: number; channel: string }> {
+  const { token, exp } = await ytConnect(clientId);
+  const channel = await ytFetchChannel(token);
+  return { token, exp, channel };
 }
 
 export async function ytFetchChannel(token: string): Promise<string> {

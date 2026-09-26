@@ -8,17 +8,17 @@ import {
   Volume2, VolumeX, WandSparkles, X,
 } from "lucide-react";
 import { EL_CATS, MODES } from "@/lib/catalog";
-import { expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, money } from "@/lib/format";
-import { allModels, modelOf, priceFor } from "@/lib/pricing";
+import { fmtDurPair, money } from "@/lib/format";
+import { allModels, expectedDurOf, modelOf, priceFor } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts } from "@/stores/use-ui";
+import { pushErr, useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateMenuRow, SlateOption } from "@/components/slate/dropdown";
 import { SlateTooltip } from "@/components/slate/tooltip";
 import { PageHead } from "@/components/slate/core";
-import { ModeBadge, ModeIcon, StatusBadge } from "@/components/studio/shared";
+import { ModeBadge, ModeIcon, StatusBadge, VideoProgress } from "@/components/studio/shared";
 
 function SlotBox({
   img, emptyLabel, emptyIcon, onPick, onClear, tag,
@@ -156,7 +156,7 @@ export function GenerateView() {
   const submit = () => {
     setMention(null);
     void queueGeneration().then((r) => {
-      if (!r.ok) push(r.error ?? "Cannot generate", { icon: "!", tone: "danger" });
+      if (!r.ok) pushErr(r.error ?? "Cannot generate");
       else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "✦", detail: `${m.label} · ${g.res} · ${g.dur}s` });
     });
   };
@@ -235,7 +235,7 @@ export function GenerateView() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <ModeBadge mode={v.mode} />
                       <StatusBadge status={v.status} />
-                      <SlateBadge tone="draft">{fmtDurPair(expectedDur(v, (id) => project.library.find((x) => x.id === id)), v.durActual)} · {v.res}</SlateBadge>
+                      <SlateBadge tone="draft">{fmtDurPair(expectedDurOf(v, project.library), v.durActual)} · {v.res}</SlateBadge>
                     </div>
                     <p className="text-[13px] font-semibold leading-snug mt-1.5 break-words line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                       {v.prompt || "Untitled"}
@@ -243,11 +243,7 @@ export function GenerateView() {
                     {v.status === "pending" ? (
                       <>
                         <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
-                        <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-                          <p className="text-[11.5px] font-mono text-muted mt-1.5">
-                            {money(v.cost)} est. · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
-                          </p>
-                        </SlateTooltip>
+                        <VideoProgress v={v} lead={`${money(v.cost)} est.`} />
                       </>
                     ) : (
                       <SlateTooltip tip={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
@@ -367,7 +363,7 @@ export function GenerateView() {
                   const sel = project.library.find((v) => v.id === g.extendVideo);
                   return (
                     <SlotBox
-                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${expectedDur(sel, (id) => project.library.find((x) => x.id === id))}s` : ""}
+                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${expectedDurOf(sel, project.library)}s` : ""}
                       onPick={() => openPicker({ picker: "video" })}
                       onClear={() => updateActive((d) => { d.gen.extendVideo = ""; })}
                     />

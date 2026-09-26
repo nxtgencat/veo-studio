@@ -11,9 +11,9 @@ export function setCapabilities(c: Capabilities | null) {
   CAPS = c;
 }
 
-export function capabilitiesReady(): boolean {
-  return CAPS != null;
-}
+/** Total expected duration of a library video (follows extend chains). */
+export const expectedDurOf = (v: VideoItem, lib: VideoItem[]): number =>
+  expectedDur(v, (id) => lib.find((x) => x.id === id));
 
 export interface UiModel {
   id: string;

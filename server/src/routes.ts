@@ -3,24 +3,27 @@ import { cors } from "hono/cors";
 import { z } from "zod";
 import { isAuthorized, isAuthorizedMedia, passwordRequired } from "./access.ts";
 import { uniqueSlug } from "./slug.ts";
-import { getDb, nowIso } from "./db.ts";
+import { getDb, nowIso, projectExists } from "./db.ts";
 import { clearTokenCache, getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
-import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
+import { IMAGE_MAX_BYTES, THUMB_MAX_BYTES, validateInlineImage } from "./images.ts";
 import { probeVideoMetadata, videoMetaToResAspect } from "./frames.ts";
-import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
-import { BACKUP_MAX_BYTES, buildBackupFile, inspectBackupFile, restoreBackupFile, backupTmpPath, removeBackupTmp } from "./backup.ts";
-import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
+import { deleteMedia, getMedia, mediaIdFromUrl, saveMediaBlob } from "./media-store.ts";
+import { buildStoredBackup, listBackups, deleteBackup, backupFilePath, storeUploadedBackup, restoreBackupFile } from "./backup.ts";
+import { abortUpload, appendPart, completeUpload, initUpload, type UploadSession } from "./uploads.ts";
+import { capabilitiesSnapshot } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
 import { cancelJob, createJob, getJob, jobElapsedMs, jobEta } from "./jobs.ts";
-import { extractFrames } from "./frames.ts";
 import { logger } from "./logger.ts";
 
 export const app = new Hono();
 
 const err = (c: any, status: number, code: string, message: string, details?: unknown) =>
   c.json({ error: { code, message, ...(details ? { details } : {}) } }, status as never);
+
+/** Lenient JSON body ({} when empty/invalid — schemas reject what matters). */
+const readJson = (c: any): Promise<any> => c.req.json().catch(() => ({}));
 
 app.use("*", async (c, next) => {
   const t0 = Date.now();
@@ -50,17 +53,22 @@ const PUBLIC_PATHS = new Set(["/health", "/auth/status"]);
 
 app.use("*", async (c, next) => {
   if (PUBLIC_PATHS.has(new URL(c.req.url).pathname)) return next();
-  // Browser media tags (<video src>) can't send Authorization headers —
-  // allow ?token= as a fallback for media playback only (Range-safe).
-  if (c.req.method === "GET" && new URL(c.req.url).pathname.startsWith("/media/")) {
+  // Browser-native downloads (<video src>, <a download>) can't send
+  // Authorization headers — allow ?token= as a fallback for these
+  // download-only GETs (media playback is Range-safe, backups stream).
+  const pathname = new URL(c.req.url).pathname;
+  const tokenDownload =
+    c.req.method === "GET" &&
+    (pathname.startsWith("/media/") || (pathname.startsWith("/backups/") && pathname.endsWith("/download")));
+  if (tokenDownload) {
     const q = new URL(c.req.url).searchParams.get("token") ?? "";
     if (!isAuthorizedMedia(c.req.header("authorization"), q)) {
-      return c.json({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required (set VEO_PASSWORD)" } }, 401);
+      return err(c, 401, "UNAUTHORIZED", "Valid Bearer token required (set VEO_PASSWORD)");
     }
     return next();
   }
   if (!isAuthorized(c.req.header("authorization"))) {
-    return c.json({ error: { code: "UNAUTHORIZED", message: "Valid Bearer token required (set VEO_PASSWORD)" } }, 401);
+    return err(c, 401, "UNAUTHORIZED", "Valid Bearer token required (set VEO_PASSWORD)");
   }
   return next();
 });
@@ -69,7 +77,7 @@ app.get("/auth/status", (c) => c.json({ required: passwordRequired() }));
 
 // ---------- projects ----------
 app.post("/projects", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
+  const body = await readJson(c);
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Untitled project";
   const db = getDb();
   // Check-then-insert can race under concurrent creates — retry on PK clash.
@@ -84,7 +92,7 @@ app.post("/projects", async (c) => {
       if (!code.startsWith("SQLITE_CONSTRAINT")) throw e;
     }
   }
-  return c.json({ error: { code: "SLUG_EXHAUSTED", message: "Could not pick a unique project id — try again" } }, 503);
+  return err(c, 503, "SLUG_EXHAUSTED", "Could not pick a unique project id — try again");
 });
 
 app.get("/projects", (c) => {
@@ -99,7 +107,7 @@ app.get("/projects/:id", (c) => {
 });
 
 app.patch("/projects/:id", async (c) => {
-  const body = await c.req.json().catch(() => ({}));
+  const body = await readJson(c);
   const db = getDb();
   const row = db.query("SELECT * FROM projects WHERE id=?").get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
@@ -111,7 +119,7 @@ app.patch("/projects/:id", async (c) => {
 app.delete("/projects/:id", async (c) => {
   const db = getDb();
   const pid = c.req.param("id");
-  if (!db.query("SELECT id FROM projects WHERE id=?").get(pid)) {
+  if (!projectExists(pid)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
   const vids = db.query("SELECT video_url FROM library WHERE project_id=?").all(pid) as { video_url: string }[];
@@ -140,22 +148,15 @@ const elementSchema = z.object({
 app.post("/projects/:id/elements", async (c) => {
   const pid = c.req.param("id");
   const db = getDb();
-  if (!db.query("SELECT id FROM projects WHERE id=?").get(pid)) {
+  if (!projectExists(pid)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
-  const parsed = elementSchema.safeParse(await c.req.json().catch(() => ({})));
+  const parsed = elementSchema.safeParse(await readJson(c));
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid element", zodDetails(parsed.error));
   // Inline uploads are inspected now (remote URLs are checked at submit time):
   // JPEG/PNG only, ≤20 MB each.
-  const inline = parseDataUrl(parsed.data.imageUrl);
-  if (inline) {
-    if (!isAllowedImageMime(inline.mime) || !sniffImageMime(inline.bytes)) {
-      return err(c, 422, "E_IMAGE_TYPE", `Element image must be JPEG or PNG, got ${inline.mime || "unknown"}`);
-    }
-    if (inline.bytes.length > IMAGE_MAX_BYTES) {
-      return err(c, 422, "E_IMAGE_TOO_LARGE", "Element image exceeds 20 MB");
-    }
-  }
+  const badImage = validateInlineImage(parsed.data.imageUrl, IMAGE_MAX_BYTES, "Element image");
+  if (badImage) return err(c, 422, badImage.code, badImage.message);
   const id = Bun.randomUUIDv7();
   const now = nowIso();
   db.query(
@@ -178,17 +179,12 @@ app.patch("/elements/:id", async (c) => {
   const db = getDb();
   const row = db.query("SELECT * FROM elements WHERE id=?").get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "ELEMENT_NOT_FOUND", "No such element");
-  const body = await c.req.json().catch(() => ({}));
+  const body = await readJson(c);
   const name = typeof body.name === "string" && body.name ? body.name : row.name;
   const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : row.image_url;
   const note = typeof body.note === "string" ? body.note : row.note;
-  const inlinePatch = parseDataUrl(imageUrl);
-  if (inlinePatch && (!isAllowedImageMime(inlinePatch.mime) || !sniffImageMime(inlinePatch.bytes))) {
-    return err(c, 422, "E_IMAGE_TYPE", `Element image must be JPEG or PNG, got ${inlinePatch.mime || "unknown"}`);
-  }
-  if (inlinePatch && inlinePatch.bytes.length > IMAGE_MAX_BYTES) {
-    return err(c, 422, "E_IMAGE_TOO_LARGE", "Element image exceeds 20 MB");
-  }
+  const badImage = validateInlineImage(imageUrl, IMAGE_MAX_BYTES, "Element image");
+  if (badImage) return err(c, 422, badImage.code, badImage.message);
   db.query("UPDATE elements SET name=?, image_url=?, note=? WHERE id=?").run(name, imageUrl, note, row.id);
   return c.json({ ...row, name, image_url: imageUrl, note });
 });
@@ -200,9 +196,7 @@ app.delete("/elements/:id", (c) => {
 });
 
 // ---------- project settings (auth + bucket; SA key never leaves the server) ----------
-// Built once and shared: PATCH used to re-fetch via an internal sub-request,
-// which carries no Authorization header and 401s behind the password gate —
-// blanking both cards until refresh. Never do authed sub-requests to self.
+// Shared reader: never do authed sub-requests to self (they carry no Authorization header).
 function settingsBody(pid: string): Record<string, unknown> {
   const s = getSettings(pid);
   let saEmail: string | null = null;
@@ -228,7 +222,7 @@ function settingsBody(pid: string): Record<string, unknown> {
 
 app.get("/projects/:id/settings", (c) => {
   const pid = c.req.param("id");
-  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
+  if (!projectExists(pid)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
   return c.json(settingsBody(pid));
@@ -243,10 +237,10 @@ const settingsSchema = z.object({
 
 app.patch("/projects/:id/settings", async (c) => {
   const pid = c.req.param("id");
-  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
+  if (!projectExists(pid)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
-  const parsed = settingsSchema.safeParse(await c.req.json().catch(() => ({})));
+  const parsed = settingsSchema.safeParse(await readJson(c));
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid settings", zodDetails(parsed.error));
   // Live verification BEFORE anything is saved: a new key must mint a token,
   // and a bucket ID must exist and be reachable with the effective credentials.
@@ -327,7 +321,7 @@ async function verifySettingsLive(
 // ---------- composer / jobs ----------
 app.post("/composer/jobs", async (c) => {
   const key = c.req.header("idempotency-key") ?? c.req.header("Idempotency-Key");
-  const body = await c.req.json().catch(() => ({}));
+  const body = await readJson(c);
   const bodyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey : undefined;
   const parsed = jobInputSchema.safeParse(body);
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid job input", zodDetails(parsed.error));
@@ -417,26 +411,67 @@ function formatJob(row: any, etaCache?: Map<string, { etaMs: number; source: "me
   };
 }
 
-// ---------- media file store ----------
-app.post("/media/upload", async (c) => {
-  const form = await c.req.formData().catch(() => null);
-  const file = form?.get("file");
-  if (!(file instanceof Blob)) return err(c, 400, "FILE_REQUIRED", "Multipart field 'file' is required");
-  if (!file.size) return err(c, 400, "EMPTY_FILE", "Uploaded file is empty");
-  if (file.size > MEDIA_MAX_BYTES) return err(c, 413, "MEDIA_TOO_LARGE", "Limit is 200 MB per file");
-  const mime = (file as File).type || "application/octet-stream";
-  if (!mime.startsWith("video/") && !mime.startsWith("image/")) {
-    return err(c, 415, "MEDIA_TYPE", `Only video/* and image/* uploads, got ${mime}`);
-  }
-  const bytes = new Uint8Array(await file.arrayBuffer());
+// ---------- chunked uploads (8 MiB octet-stream parts — under all body caps) ----------
+const uploadInitSchema = z.object({
+  kind: z.enum(["backup", "media"]),
+  filename: z.string().max(200).default("upload"),
+  mime: z.string().max(100).default("application/octet-stream"),
+  size: z.number().int().min(1),
+});
+
+app.post("/uploads", async (c) => {
+  const parsed = uploadInitSchema.safeParse(await readJson(c));
+  if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid upload", zodDetails(parsed.error));
   try {
-    const saved = await saveMedia(bytes, mime);
-    return c.json(saved, 201);
+    return c.json(await initUpload(parsed.data.kind, parsed.data.filename, parsed.data.mime, parsed.data.size), 201);
   } catch (e: any) {
-    return err(c, 422, e?.code ?? "UPLOAD_FAILED", e?.message ?? "Could not store file");
+    return err(c, e?.status ?? 422, e?.code ?? "UPLOAD_FAILED", e?.message ?? "Could not start upload");
   }
 });
 
+app.put("/uploads/:id/part", async (c) => {
+  const index = Number(c.req.query("index") ?? NaN);
+  if (!Number.isInteger(index) || index < 0) {
+    return err(c, 400, "PART_REQUIRED", "Query ?index=N (0-based part number) is required");
+  }
+  const bytes = new Uint8Array(await c.req.arrayBuffer().catch(() => new ArrayBuffer(0)));
+  try {
+    return c.json(await appendPart(c.req.param("id"), index, bytes));
+  } catch (e: any) {
+    return err(c, e?.status ?? 422, e?.code ?? "UPLOAD_FAILED", e?.message ?? "Could not store part");
+  }
+});
+
+app.post("/uploads/:id/complete", async (c) => {
+  const id = c.req.param("id");
+  let path: string;
+  let session: UploadSession;
+  try {
+    ({ path, session } = await completeUpload(id));
+  } catch (e: any) {
+    return err(c, e?.status ?? 422, e?.code ?? "UPLOAD_FAILED", e?.message ?? "Could not complete upload");
+  }
+  try {
+    if (session.kind === "backup") {
+      return c.json(await storeUploadedBackup(path, session.filename), 201);
+    }
+    return c.json(await saveMediaBlob(Bun.file(path), session.mime), 201);
+  } catch (e: any) {
+    const code = e?.code ?? "UPLOAD_FAILED";
+    return err(c, code === "E_BACKUP_TOO_LARGE" ? 413 : 422, code, e?.message ?? "Upload failed");
+  } finally {
+    // Session files are done serving: success filed them elsewhere (or it
+    // failed validation and can never succeed) — never keep partials.
+    await abortUpload(id);
+  }
+});
+
+app.delete("/uploads/:id", async (c) => {
+  if (!(await abortUpload(c.req.param("id")))) return err(c, 404, "UPLOAD_NOT_FOUND", "No such upload");
+  return c.json({ aborted: true });
+});
+
+// ---------- media file store ----------
 app.get("/media/:id", (c) => {
   const hit = getMedia(c.req.param("id"));
   if (!hit) return err(c, 404, "MEDIA_NOT_FOUND", "No such file");
@@ -511,17 +546,12 @@ app.patch("/library/:id", async (c) => {
   const db = getDb();
   const row = db.query("SELECT * FROM library WHERE id=?").get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
-  const body = await c.req.json().catch(() => ({}));
+  const body = await readJson(c);
   const thumb = typeof body.thumbDataUrl === "string" ? body.thumbDataUrl : "";
   if (!thumb) return err(c, 422, "THUMB_REQUIRED", "thumbDataUrl is required");
   // Browser-captured JPEG/PNG only, ≤2 MB — same rules as import thumbs.
-  const inline = parseDataUrl(thumb);
-  if (!inline || !isAllowedImageMime(inline.mime) || !sniffImageMime(inline.bytes)) {
-    return err(c, 422, "E_IMAGE_TYPE", `Thumbnail must be JPEG or PNG, got ${inline?.mime || "unknown"}`);
-  }
-  if (inline.bytes.length > 2000000) {
-    return err(c, 422, "E_IMAGE_TOO_LARGE", "Thumbnail exceeds 2 MB");
-  }
+  const badThumb = validateInlineImage(thumb, THUMB_MAX_BYTES, "Thumbnail", true);
+  if (badThumb) return err(c, 422, badThumb.code, badThumb.message);
   db.query("UPDATE library SET thumb_url=?, updated_at=? WHERE id=?").run(thumb, nowIso(), row.id);
   return c.json({ ...(row as object), thumb_url: thumb });
 });
@@ -544,15 +574,15 @@ const importSchema = z.object({
   aspect: z.enum(["16:9", "9:16"]).default("16:9"),
   durationSeconds: z.number().int().min(1).max(3600).default(8),
   audio: z.boolean().default(true),
-  thumbDataUrl: z.string().max(2000000).default(""),
+  thumbDataUrl: z.string().max(THUMB_MAX_BYTES).default(""),
   mediaId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
 });
 
 app.post("/library/import", async (c) => {
-  const parsed = importSchema.safeParse(await c.req.json().catch(() => ({})));
+  const parsed = importSchema.safeParse(await readJson(c));
   if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid import", zodDetails(parsed.error));
   const db = getDb();
-  if (!db.query("SELECT id FROM projects WHERE id=?").get(parsed.data.projectId)) {
+  if (!projectExists(parsed.data.projectId)) {
     return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
   }
   let videoUrl = "";
@@ -562,9 +592,11 @@ app.post("/library/import", async (c) => {
   let actualDuration: number | null = null;
   if (parsed.data.mediaId) {
     const hit = getMedia(parsed.data.mediaId);
-    if (!hit) return err(c, 422, "MEDIA_NOT_FOUND", "Upload the file via POST /media/upload first");
+    if (!hit) return err(c, 422, "MEDIA_NOT_FOUND", "Upload the file in chunks via POST /uploads first");
     videoUrl = `/media/${parsed.data.mediaId}`;
     // Verify container server-side instead of trusting client-declared meta.
+    // Full read is required: MediaBunny demuxes with random access, so there
+    // is no header-only streaming probe. Capped at 200 MB by the media store.
     try {
       const meta = await probeVideoMetadata(new Uint8Array(await Bun.file(hit.path).bytes()), hit.mime);
       const mapped = videoMetaToResAspect(meta.width, meta.height);
@@ -591,72 +623,50 @@ app.post("/library/import", async (c) => {
   return c.json({ id }, 201);
 });
 
-// ---------- backup & restore ----------
-app.get("/backup", async (c) => {
-  const q = c.req.query();
-  const opts = {
-    elements: q.elements === "1",
-    generated: q.generated === "1",
-    uploads: q.uploads === "1",
-    ...(q.projectId ? { projectId: q.projectId } : {}),
-  };
+// ---------- backups (stored files: build, upload, download, restore, delete) ----------
+app.get("/backups", (c) => {
+  return c.json({ backups: listBackups() });
+});
+
+app.post("/backups", async (c) => {
   try {
-    const { filename, path } = await buildBackupFile(opts);
-    return new Response(Bun.file(path), {
-      headers: {
-        "Content-Type": "application/x-tar",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-      },
-    });
+    return c.json(await buildStoredBackup(), 201);
   } catch (e: any) {
     return err(c, e?.code === "E_BACKUP_TOO_LARGE" ? 413 : 500, e?.code ?? "BACKUP_FAILED", e?.message ?? "Backup failed");
   }
 });
 
-app.post("/restore", async (c) => {
-  const up = await readUploadTmp(c);
-  if (up === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
-  if (typeof up !== "string") return err(c, 400, "FILE_REQUIRED", up.message);
+app.get("/backups/:id/download", (c) => {
+  const p = backupFilePath(c.req.param("id"));
+  if (!p) return err(c, 404, "BACKUP_NOT_FOUND", "No such backup file");
+  const row = getDb().query("SELECT filename FROM backups WHERE id=?").get(c.req.param("id")) as { filename: string };
+  const file = Bun.file(p);
+  return new Response(file as unknown as Blob, {
+    headers: {
+      "Content-Type": "application/x-tar",
+      // Known size → browsers show real download progress.
+      "Content-Length": String(file.size),
+      "Content-Disposition": `attachment; filename="${row.filename}"`,
+    },
+  });
+});
+
+app.post("/backups/:id/restore", async (c) => {
+  const p = backupFilePath(c.req.param("id"));
+  if (!p) return err(c, 404, "BACKUP_NOT_FOUND", "No such backup file");
   try {
-    return c.json(await restoreBackupFile(up));
+    return c.json(await restoreBackupFile(p));
   } catch (e: any) {
     const code = e?.code ?? "RESTORE_FAILED";
     const status = code === "E_BACKUP_TOO_LARGE" ? 413 : 422;
     return err(c, status, code, e?.message ?? "Restore failed");
-  } finally {
-    removeBackupTmp(up);
   }
 });
 
-/** Inspect an archive without importing anything (confirm-before-restore). */
-app.post("/restore/inspect", async (c) => {
-  const up = await readUploadTmp(c);
-  if (up === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
-  if (typeof up !== "string") return err(c, 400, "FILE_REQUIRED", up.message);
-  try {
-    const { manifest, counts } = await inspectBackupFile(up);
-    return c.json({ manifest, counts });
-  } catch (e: any) {
-    return err(c, 422, e?.code ?? "RESTORE_FAILED", e?.message ?? "Inspect failed");
-  } finally {
-    removeBackupTmp(up);
-  }
+app.delete("/backups/:id", (c) => {
+  if (!deleteBackup(c.req.param("id"))) return err(c, 404, "BACKUP_NOT_FOUND", "No such backup");
+  return c.json({ deleted: true });
 });
-
-/**
- * Stream an uploaded archive straight to disk (constant RAM) instead of
- * buffering it. Returns the temp path, null when over the cap, or a message.
- */
-async function readUploadTmp(c: any): Promise<string | { message: string } | null> {
-  const form = await c.req.formData().catch(() => null);
-  const file = form?.get("file");
-  if (!(file instanceof Blob)) return { message: "Multipart field 'file' (.tar) is required" };
-  if (file.size > BACKUP_MAX_BYTES) return null;
-  if (!file.size) return { message: "Uploaded file is empty" };
-  const path = `${backupTmpPath("upload")}.tar`;
-  await Bun.write(path, (file as Blob).stream());
-  return path;
-}
 
 // ---------- capabilities ----------
 app.get("/models/capabilities", (c) => {
@@ -669,29 +679,6 @@ app.get("/models/capabilities", (c) => {
   });
 });
 
-// ---------- frames (MediaBunny, no ffmpeg) ----------
-app.post("/frames/extract", async (c) => {
-  const form = await c.req.formData().catch(() => null);
-  const file = form?.get("video");
-  if (!(file instanceof Blob)) return err(c, 400, "VIDEO_REQUIRED", "Multipart field 'video' is required");
-  const count = Math.min(Math.max(Number(form?.get("count") ?? 3), 1), 10);
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.length === 0) return err(c, 400, "EMPTY_VIDEO", "Uploaded video is empty");
-  if (bytes.length > 200 * 1024 * 1024) return err(c, 413, "VIDEO_TOO_LARGE", "Limit is 200MB");
-  try {
-    const result = await extractFrames(bytes, (file as File).type || "video/mp4", { count });
-    logger.info(
-      { duration: result.durationSeconds, frames: result.frames.length },
-      "frames extracted",
-    );
-    return c.json(result);
-  } catch (e: any) {
-    logger.error({ err: e?.message }, "frame extraction failed");
-    return err(c, 422, "EXTRACTION_FAILED", e?.message ?? "Could not decode video");
-  }
-});
-
 app.get("/health", (c) => c.json({ ok: true, time: nowIso() }));
 
 export type App = typeof app;
-export { getModel };

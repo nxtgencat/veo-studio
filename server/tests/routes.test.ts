@@ -10,24 +10,7 @@ process.env.MEDIA_DIR = join(tmpdir(), `veo-media-test-${process.pid}`);
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { app } from "../src/routes.ts";
 import { setDriverForTests, settleBackground } from "../src/jobs.ts";
-
-// Real RSA keys so the live key check exercises the true signing path.
-async function makeSaJson(email: string): Promise<string> {
-  const pair = await crypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
-    true,
-    ["sign", "verify"],
-  );
-  const der = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
-  let bin = "";
-  for (const b of der) bin += String.fromCharCode(b);
-  return JSON.stringify({
-    type: "service_account",
-    project_id: "p",
-    private_key: `-----BEGIN PRIVATE KEY-----\n${btoa(bin)}\n-----END PRIVATE KEY-----\n`,
-    client_email: email,
-  });
-}
+import { makeSaJson, chunkedUpload } from "./helpers.ts";
 
 // Settle background tasks inside this file's lifetime so they never bleed
 // into other test files' databases.
@@ -90,9 +73,7 @@ describe("routes", () => {
 
   test("media upload, serve, range, and cleanup on delete", async () => {
     const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    const fd = new FormData();
-    fd.append("file", new File([bytes.buffer as ArrayBuffer], "clip.mp4", { type: "video/mp4" }));
-    const up = await app.request("/media/upload", { method: "POST", body: fd });
+    const up = await chunkedUpload(app, "media", bytes, { filename: "clip.mp4", mime: "video/mp4", part: 4 });
     expect(up.status).toBe(201);
     const saved = (await up.json()) as { id: string; url: string };
     expect(saved.url).toBe(`/media/${saved.id}`);
@@ -121,9 +102,7 @@ describe("routes", () => {
   });
 
   test("media upload rejects non-video/image", async () => {
-    const fd = new FormData();
-    fd.append("file", new File(["hi"], "a.txt", { type: "text/plain" }));
-    const up = await app.request("/media/upload", { method: "POST", body: fd });
+    const up = await chunkedUpload(app, "media", new TextEncoder().encode("hi"), { filename: "a.txt", mime: "text/plain" });
     expect(up.status).toBe(415);
   });
 

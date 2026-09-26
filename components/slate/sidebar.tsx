@@ -22,7 +22,6 @@ interface SlateSidebarState {
   setOpen: (v: boolean) => void;
   openMobile: boolean;
   setOpenMobile: (v: boolean) => void;
-  isDesktop: boolean;
   toggle: () => void;
 }
 
@@ -34,18 +33,6 @@ export function useSlateSidebar() {
   return ctx;
 }
 
-function useMedia(query: string) {
-  const [matches, setMatches] = React.useState(false);
-  React.useEffect(() => {
-    const mql = window.matchMedia(query);
-    const onChange = () => setMatches(mql.matches);
-    onChange();
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, [query]);
-  return matches;
-}
-
 export function SlateSidebarProvider({
   children,
   storageKey = STORAGE_KEY,
@@ -53,7 +40,6 @@ export function SlateSidebarProvider({
   children: React.ReactNode;
   storageKey?: string;
 }) {
-  const isDesktop = useMedia(DESKTOP_QUERY);
   const [open, setOpenState] = React.useState(true);
   const [openMobile, setOpenMobile] = React.useState(false);
 
@@ -110,8 +96,8 @@ export function SlateSidebarProvider({
   }, [toggle]);
 
   const value = React.useMemo<SlateSidebarState>(
-    () => ({ open, setOpen, openMobile, setOpenMobile: setOpenMobileStable, isDesktop, toggle }),
-    [open, setOpen, openMobile, setOpenMobileStable, isDesktop, toggle],
+    () => ({ open, setOpen, openMobile, setOpenMobile: setOpenMobileStable, toggle }),
+    [open, setOpen, openMobile, setOpenMobileStable, toggle],
   );
 
   return <SlateSidebarContext.Provider value={value}>{children}</SlateSidebarContext.Provider>;

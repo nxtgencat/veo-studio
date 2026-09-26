@@ -84,4 +84,3 @@ export function SlateCloseButton({
     </SlateIconButton>
   );
 }
-export { buttonVariants };

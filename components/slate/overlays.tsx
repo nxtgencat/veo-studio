@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { cn } from "cn";
-import { SlateCloseButton } from "@/components/slate/button";
+import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 
-function useLock() {
+/** Shared dialog behavior: body scroll-lock + Escape to close. */
+function useDialog(onClose: () => void) {
   React.useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -12,18 +12,6 @@ function useLock() {
       document.body.style.overflow = prev;
     };
   }, []);
-}
-
-export function SlateModal({
-  children,
-  wide,
-  onClose,
-}: {
-  children: React.ReactNode;
-  wide?: boolean;
-  onClose: () => void;
-}) {
-  useLock();
   React.useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -31,12 +19,22 @@ export function SlateModal({
     document.addEventListener("keydown", key);
     return () => document.removeEventListener("keydown", key);
   }, [onClose]);
+}
+
+export function SlateModal({
+  children,
+  onClose,
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  useDialog(onClose);
   return (
     <div className="fixed inset-0 z-[70]" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="absolute inset-0 overflow-y-auto">
         <div className="min-h-full flex p-4">
-          <div className={cn("m-auto w-full slate-card p-5", wide ? "max-w-[720px]" : "max-w-[560px]")}>
+          <div className="m-auto w-full slate-card p-5 max-w-[560px]">
             {children}
           </div>
         </div>
@@ -66,14 +64,7 @@ export function SlateDialog({
   footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  useLock();
-  React.useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [onClose]);
+  useDialog(onClose);
   return (
     <div className="fixed inset-0 z-[70]" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
@@ -106,14 +97,10 @@ export function SlateDrawer({
   footer?: React.ReactNode;
 }) {
   const [inX, setInX] = React.useState(false);
+  useDialog(onClose);
   React.useEffect(() => {
     requestAnimationFrame(() => setInX(true));
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [onClose]);
+  }, []);
   return (
     <div className="fixed inset-0 z-[60] lg:hidden">
       <div
@@ -133,5 +120,37 @@ export function SlateDrawer({
         {footer && <div className="p-3 border-t slate-hair shrink-0">{footer}</div>}
       </aside>
     </div>
+  );
+}
+
+/** Shared delete/cancel/dismiss confirm: title + body + Cancel/danger pair. */
+export function ConfirmDeleteDialog({
+  title,
+  body,
+  action = "Delete",
+  icon,
+  busy,
+  close,
+  confirm,
+}: {
+  title: string;
+  body: React.ReactNode;
+  action?: string;
+  icon?: React.ReactNode;
+  busy?: boolean;
+  close: () => void;
+  confirm: () => void;
+}) {
+  return (
+    <SlateModal onClose={close}>
+      <h3 className="font-display font-bold text-[16px]">{title}</h3>
+      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">{body}</p>
+      <div className="mt-5 flex gap-2 justify-end">
+        <SlateButton variant="ghost" onClick={close}>Cancel</SlateButton>
+        <SlateButton variant="danger" disabled={busy} onClick={confirm}>
+          {icon}{action}
+        </SlateButton>
+      </div>
+    </SlateModal>
   );
 }

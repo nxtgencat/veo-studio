@@ -136,7 +136,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
                   Projects · {projects.length}
                 </p>
               </div>
-              <ProjectList compact />
+              <ProjectList />
             </div>
           </div>
           <div className="p-3 pt-2 shrink-0 border-t slate-hair">
@@ -170,7 +170,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             Projects · {projects.length}
           </p>
         </div>
-        <ProjectList compact />
+        <ProjectList />
       </SlateSidebarDrawer>
 
       <footer className="shrink-0 h-9 border-t slate-hair bg-surface/90 hidden sm:flex items-center gap-4 px-4 lg:px-6 text-[11.5px] text-muted overflow-hidden whitespace-nowrap">

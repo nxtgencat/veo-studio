@@ -4,16 +4,16 @@ import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts } from "@/stores/use-ui";
+import { pushErr, useToasts } from "@/stores/use-ui";
 import { projectNameSchema } from "@/lib/schemas";
 import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel } from "@/components/slate/core";
-import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { ConfirmDeleteDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 import { SlateTooltip } from "@/components/slate/tooltip";
 import { pendingOf } from "@/lib/pricing";
 
-export function ProjectList({ compact }: { compact?: boolean }) {
+export function ProjectList() {
   const projects = useStudio((s) => s.projects);
   const activeId = useStudio((s) => s.activeId);
   const params = useParams<{ tab?: string }>();
@@ -96,7 +96,6 @@ export function ProjectList({ compact }: { compact?: boolean }) {
       {creating && <ProjectModal done={() => setCreating(false)} />}
       {renaming && <ProjectModal initial={renaming} done={() => setRenaming(null)} />}
       {deleting && <DeleteProjectConfirm id={deleting.id} name={deleting.name} done={() => setDeleting(null)} />}
-      {compact ? null : null}
     </>
   );
 }
@@ -123,7 +122,7 @@ function ProjectModal({ initial, done }: { initial?: { id: string; name: string 
           if (initial) {
             void renameProject(initial.id, parsed.data).then(
               () => push("Project renamed", { icon: "check" }),
-              () => push("Rename failed — is the server running?", { icon: "!", tone: "danger" }),
+              () => pushErr("Rename failed — is the server running?"),
             );
           } else {
             void createProject(parsed.data).then(
@@ -131,7 +130,7 @@ function ProjectModal({ initial, done }: { initial?: { id: string; name: string 
                 push("Project created", { icon: "plus" });
                 router.push(`/p/${id}/generate`);
               },
-              () => push("Create failed — is the server running?", { icon: "!", tone: "danger" }),
+              () => pushErr("Create failed — is the server running?"),
             );
           }
           done();
@@ -168,40 +167,20 @@ function DeleteProjectConfirm({ id, name, done }: { id: string; name: string; do
   const push = useToasts((s) => s.push);
   const single = useStudio((s) => s.projects.length <= 1);
   return (
-    <SlateModal onClose={done}>
-      <h3 className="font-display font-bold text-[16px]">Delete “{name}”?</h3>
-      <p className="mt-1.5 text-[13.5px] text-fg2 leading-relaxed">
-        Its library, elements and history go with it. This cannot be undone.
-        {single ? " This is your last project — you'll land on a fresh start screen." : ""}
-      </p>
-      <div className="mt-5 flex gap-2 justify-end">
-        <SlateButton variant="ghost" onClick={done}>
-          Cancel
-        </SlateButton>
-        <SlateButton
-          variant="danger"
-          onClick={() => {
-            void deleteProject(id).then(
-              () => {
-                push("Project deleted", { icon: "trash", tone: "info" });
-                done();
-              },
-              () => push("Delete failed — is the server running?", { icon: "!", tone: "danger" }),
-            );
-          }}
-        >
-          Delete project
-        </SlateButton>
-      </div>
-    </SlateModal>
+    <ConfirmDeleteDialog
+      title={`Delete “${name}”?`}
+      body={<>Its library, elements and history go with it. This cannot be undone.{single ? " This is your last project — you'll land on a fresh start screen." : ""}</>}
+      action="Delete project"
+      close={done}
+      confirm={() => {
+        void deleteProject(id).then(
+          () => {
+            push("Project deleted", { icon: "trash", tone: "info" });
+            done();
+          },
+          () => pushErr("Delete failed — is the server running?"),
+        );
+      }}
+    />
   );
-}
-
-export function SlateOptRow(props: {
-  active?: boolean;
-  onPick: () => void;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return <SlateOption active={props.active} onPick={props.onPick} onClose={props.onClose}>{props.children}</SlateOption>;
 }

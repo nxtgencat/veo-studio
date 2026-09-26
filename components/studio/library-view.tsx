@@ -1,22 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "lucide-react";
-import { ago, expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
-import { modelOf } from "@/lib/pricing";
-import { captureVideo } from "@/lib/media";
-import { api } from "@/lib/api";
+import { ago, fmtDurPair, fullTs } from "@/lib/format";
+import { expectedDurOf, modelOf } from "@/lib/pricing";
+import { uploadVideoFile } from "@/lib/upload-video";
 import { useStudio } from "@/stores/use-studio";
-import { useToasts } from "@/stores/use-ui";
+import { pushErr, useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
-import { SlateTooltip } from "@/components/slate/tooltip";
 import { SlateButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { PageHead, SlateEmpty, SlateProgress, SlateSegmented } from "@/components/slate/core";
-import { ModeBadge, StatusBadge } from "@/components/studio/shared";
+import { ModeBadge, StatusBadge, VideoCost, VideoProgress } from "@/components/studio/shared";
 import type { VideoItem } from "@/lib/schemas";
 
 export function LibraryView() {
@@ -27,6 +25,9 @@ export function LibraryView() {
   const push = useToasts((s) => s.push);
   const { state, set, clear } = useQueryState({ status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all", source: "all" });
   const [busy, setBusy] = useState(false);
+  // "2/5 · clip.mp4" while a batch runs; abort controller = the Cancel button.
+  const [progress, setProgress] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
 
   const models = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.model))], [project?.library]);
   const reses = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.res))], [project?.library]);
@@ -52,37 +53,47 @@ export function LibraryView() {
     ? [state.status, state.model, state.res, state.aspect, state.dur, state.audio].filter((x) => x !== "all").length
     : 0;
 
-  const onUpload = async (file: File) => {
+  const onUpload = async (files: File[]) => {
+    if (!files.length || busy) return;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setBusy(true);
-    push("Uploading video…", { icon: "↑" });
-    try {
-      // Thumb/meta locally, bytes to the server store — the library record
-      // then plays and extends from the server, surviving reloads.
-      const [{ thumb, meta }, uploaded] = await Promise.all([
-        captureVideo(file),
-        api.uploadMedia(file).catch((e) => {
-          push("Server upload failed — importing record only", {
-            icon: "!",
-            tone: "danger",
-            detail: String(e instanceof Error ? e.message : e).slice(0, 120),
-          });
-          return null;
-        }),
-      ]);
-      const r = await importVideo({
-        prompt: (file.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 80) || "Uploaded video",
-        res: meta.res,
-        aspect: meta.aspect,
-        dur: meta.dur,
-        thumbDataUrl: thumb,
-        ...(uploaded ? { mediaId: uploaded.id } : {}),
+    const total = files.length;
+    push(total > 1 ? `Uploading ${total} videos…` : "Uploading video…", { icon: "↑" });
+    let ok = 0;
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      if (ctrl.signal.aborted) break;
+      // Sequential on purpose: each upload buffers server-side, so parallel
+      // 200 MB files would spike RAM. Thumb/meta capture runs alongside.
+      setProgress(total > 1 ? `${i + 1}/${total} · ${file.name}` : file.name);
+      try {
+        const r = await uploadVideoFile(file, importVideo, ctrl.signal, (frac) => {
+          const pct = Math.round(frac * 100);
+          setProgress(total > 1 ? `${i + 1}/${total} · ${pct}%` : `${pct}%`);
+        });
+        if (ctrl.signal.aborted) break;
+        if (!r.stored) pushErr("Server upload failed — importing record only", r.uploadDetail || undefined);
+        if (!r.ok) {
+          pushErr(total > 1 ? `${file.name}: ${r.error ?? "Import failed"}` : (r.error ?? "Import failed"));
+        } else {
+          ok++;
+          if (total === 1) push(r.stored ? "Video uploaded to Library" : "Video recorded in Library (no file stored)", { icon: "✓" });
+        }
+      } catch {
+        if (!ctrl.signal.aborted) pushErr(total > 1 ? `${file.name}: could not read` : "Could not read that video");
+      }
+    }
+    abortRef.current = null;
+    setProgress("");
+    setBusy(false);
+    if (ctrl.signal.aborted) {
+      push(`Upload cancelled${ok ? ` — ${ok} already imported` : ""}`, { icon: "×", tone: "info" });
+    } else if (total > 1) {
+      push(ok === total ? `All ${total} videos uploaded to Library` : `${ok} of ${total} videos imported`, {
+        icon: ok ? "✓" : "!",
+        tone: ok ? undefined : "danger",
       });
-      if (!r.ok) push(r.error ?? "Import failed", { icon: "!", tone: "danger" });
-      else push(uploaded ? "Video uploaded to Library" : "Video recorded in Library (no file stored)", { icon: "✓" });
-    } catch {
-      push("Could not read that video", { icon: "!", tone: "danger" });
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -111,19 +122,28 @@ export function LibraryView() {
         title="Library"
         sub={`Every render in ${project.name}. Click a card for player, config, inputs and cost.`}
         actions={
-          <label className="slate-btn slate-btn-primary slate-btn-sm cursor-pointer">
-            <Upload className="size-3.5" /> {busy ? "Importing…" : "Upload video"}
-            <input
-              type="file"
-              accept="video/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void onUpload(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
+          <>
+            <label className="slate-btn slate-btn-primary slate-btn-sm cursor-pointer">
+              <Upload className="size-3.5" /> {busy ? (progress || "Importing…") : "Upload video"}
+              <input
+                type="file"
+                accept="video/*"
+                multiple
+                className="hidden"
+                disabled={busy}
+                onChange={(e) => {
+                  const fs = [...(e.target.files ?? [])];
+                  if (fs.length) void onUpload(fs);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            {busy && (
+              <SlateButton variant="ghost" size="sm" onClick={() => abortRef.current?.abort()}>
+                <X className="size-3.5" /> Cancel
+              </SlateButton>
+            )}
+          </>
         }
       />
 
@@ -207,18 +227,14 @@ export function LibraryView() {
                 {v.status === "pending" && (
                   <div className="absolute inset-0 bg-black/45 p-2.5 sm:p-4 flex flex-col justify-end gap-1.5">
                     <SlateProgress value={v.progress || 5} />
-                    <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-                      <p className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums">
-                        {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)}
-                      </p>
-                    </SlateTooltip>
+                    <VideoProgress v={v} trail="" className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums" />
                   </div>
                 )}
                 <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 hidden min-[420px]:inline-flex">
                   <ModeBadge mode={v.mode} />
                 </span>
                 <SlateBadge tone="draft" className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 tabular-nums">
-                  {fmtDurPair(expectedDur(v, (id) => project.library.find((x) => x.id === id)), v.durActual)} · {v.res}
+                  {fmtDurPair(expectedDurOf(v, project.library), v.durActual)} · {v.res}
                 </SlateBadge>
                 {v.status !== "pending" && (
                   <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" tip={fullTs(v.createdAt)}>
@@ -232,11 +248,7 @@ export function LibraryView() {
                 </p>
                 <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
                   <StatusBadge status={v.status} />
-                  <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-                    <span className="text-[11px] sm:text-[12px] font-mono text-fg2">
-                      {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
-                    </span>
-                  </SlateTooltip>
+                  <VideoCost v={v} className="text-[11px] sm:text-[12px] font-mono text-fg2" />
                 </div>
               </div>
             </Link>

@@ -30,8 +30,6 @@ function ToastGlyph({ icon, tone }: { icon?: string; tone: ToastTone }) {
       return <Trash2 className="size-4" aria-hidden="true" />;
     case "…":
       return <Loader2 className="size-4 animate-spin" aria-hidden="true" />;
-    case "trash":
-      return <Trash2 className="size-4" aria-hidden="true" />;
     case "!":
       return <TriangleAlert className="size-4" aria-hidden="true" />;
     case "▶":

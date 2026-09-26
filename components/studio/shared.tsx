@@ -1,10 +1,13 @@
 "use client";
 
 import {
-  Check, CircleCheck, CircleX, Clapperboard, Columns2, Film, Image, Layers,
+  CircleCheck, CircleX, Columns2, Film, Image, Layers,
   Loader2, StretchHorizontal, Type, type LucideIcon,
 } from "lucide-react";
 import { SlateBadge } from "@/components/slate/badge";
+import { SlateTooltip } from "@/components/slate/tooltip";
+import { fmtCountdown, fmtElapsed, money } from "@/lib/format";
+import type { VideoItem } from "@/lib/schemas";
 
 export const MODE_ICONS: Record<string, LucideIcon> = {
   type: Type, image: Image, "columns-2": Columns2, layers: Layers, "stretch-horizontal": StretchHorizontal, film: Film,
@@ -52,4 +55,26 @@ export function ModeBadge({ mode }: { mode: string }) {
   );
 }
 
-export { Check, Clapperboard };
+/** Pending-job progress line: lead · countdown · elapsed, with ETA-source tip. */
+export function VideoProgress({ v, lead, trail = " elapsed", className }: {
+  v: VideoItem; lead?: React.ReactNode; trail?: string; className?: string;
+}) {
+  return (
+    <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+      <p className={`font-mono ${className ?? "text-[11.5px] text-muted mt-1.5"}`}>
+        {lead ?? `${v.progress || 5}%`} · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)}{trail}
+      </p>
+    </SlateTooltip>
+  );
+}
+
+/** Cost with pending estimate + failed strikethrough + explanatory tip. */
+export function VideoCost({ v, className }: { v: VideoItem; className?: string }) {
+  return (
+    <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+      <span className={className ?? "font-mono text-[12px] text-fg2"}>
+        {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
+      </span>
+    </SlateTooltip>
+  );
+}

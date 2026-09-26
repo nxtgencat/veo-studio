@@ -4,11 +4,13 @@ import { join } from "node:path";
 
 process.env.SQLITE_FILE = ":memory:";
 process.env.MEDIA_DIR = join(tmpdir(), `veo-media-backup-${process.pid}`);
+process.env.BACKUPS_DIR = join(tmpdir(), `veo-backups-test-${process.pid}`);
 
 import { getDb, resetDbForTests } from "../src/db.ts";
 import { nowIso } from "../src/db.ts";
 import { mediaDir } from "../src/media-store.ts";
 import { app } from "../src/routes.ts";
+import { chunkedUpload } from "./helpers.ts";
 
 function seedAll() {
   const db = getDb();
@@ -52,92 +54,65 @@ beforeEach(() => {
   seedAll();
 });
 
-describe("backup", () => {
-  test("defaults export projects+settings only", async () => {
+describe("backups", () => {
+  test("build packs everything and lists it", async () => {
     await seedMedia();
-    const res = await app.request("/backup");
-    expect(res.status).toBe(200);
-    const files = await new Bun.Archive(new Uint8Array(await res.arrayBuffer())).files();
-    expect([...files.keys()].sort()).toEqual(
-      ["manifest.json", "media.json", "projects.json", "settings.json"].sort(),
-    );
-    const manifest = JSON.parse(await files.get("manifest.json")!.text()) as { counts: Record<string, number> };
-    expect(manifest.counts.projects).toBe(1);
-    expect(manifest.counts.elements).toBe(0);
-    expect(manifest.counts.library).toBe(0);
+    const res = await app.request("/backups", { method: "POST" });
+    expect(res.status).toBe(201);
+    const row = (await res.json()) as { id: string; filename: string; counts: Record<string, number> };
+    expect(row.filename).toMatch(/^veo-backup-.*\.tar$/);
+    expect(row.counts).toMatchObject({ projects: 1, elements: 1, library: 2, jobs: 1, media: 1 });
+    const list = (await (await app.request("/backups")).json()) as { backups: { id: string }[] };
+    expect(list.backups.map((b) => b.id)).toEqual([row.id]);
   });
 
-  test("scoped export includes selected data + media bytes", async () => {
+  test("download streams the stored file", async () => {
     await seedMedia();
-    const res = await app.request("/backup?elements=1&generated=1&uploads=1");
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-disposition")).toContain("veo-backup-");
-    const files = await new Bun.Archive(new Uint8Array(await res.arrayBuffer())).files();
-    expect(files.has("elements.json")).toBe(true);
-    expect(files.has("library.json")).toBe(true);
-    expect(files.has("jobs.json")).toBe(true);
+    const row = (await (await app.request("/backups", { method: "POST" })).json()) as { id: string; filename: string };
+    const dl = await app.request(`/backups/${row.id}/download`);
+    expect(dl.status).toBe(200);
+    expect(dl.headers.get("content-disposition")).toContain(row.filename);
+    const files = await new Bun.Archive(new Uint8Array(await dl.arrayBuffer())).files();
     const lib = JSON.parse(await files.get("library.json")!.text()) as { id: string }[];
     expect(lib.map((v) => v.id).sort()).toEqual(["vid_gen", "vid_up"]);
     const media = files.get("media/med1abcd.mp4");
     expect(media).toBeTruthy();
     expect(new Uint8Array(await media!.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    expect((await app.request("/backups/nope/download")).status).toBe(404);
   });
 
-  test("generated-only excludes uploads and elements", async () => {
-    const res = await app.request("/backup?generated=1");
-    const files = await new Bun.Archive(new Uint8Array(await res.arrayBuffer())).files();
-    expect(files.has("elements.json")).toBe(false);
-    const lib = JSON.parse(await files.get("library.json")!.text()) as { id: string }[];
-    expect(lib.map((v) => v.id)).toEqual(["vid_gen"]);
-  });
-
-  test("restore round-trips into a fresh db", async () => {
+  test("upload + restore round-trips into a fresh db", async () => {
     await seedMedia();
-    const full = new Uint8Array(await (await app.request("/backup?elements=1&generated=1&uploads=1")).arrayBuffer());
+    const row = (await (await app.request("/backups", { method: "POST" })).json()) as { id: string };
+    const bytes = new Uint8Array(await (await app.request(`/backups/${row.id}/download`)).arrayBuffer());
     resetDbForTests();
-    const fd = new FormData();
-    fd.append("file", new File([full.buffer as ArrayBuffer], "b.tar.gz", { type: "application/gzip" }));
-    const res = await app.request("/restore", { method: "POST", body: fd });
+    const up = await chunkedUpload(app, "backup", bytes, { filename: "b.tar", mime: "application/x-tar" });
+    expect(up.status).toBe(201);
+    const stored = (await up.json()) as { id: string; counts: Record<string, number> };
+    expect(stored.counts).toMatchObject({ projects: 1, library: 2, media: 1 });
+    const res = await app.request(`/backups/${stored.id}/restore`, { method: "POST" });
     expect(res.status).toBe(200);
     const rep = (await res.json()) as { imported: Record<string, number>; skipped: Record<string, number> };
     expect(rep.imported).toMatchObject({ projects: 1, elements: 1, library: 2, jobs: 1, media: 1 });
-    const lib = await app.request("/library?projectId=prj_bk");
-    const videos = ((await lib.json()) as { videos: unknown[] }).videos;
-    expect(videos.length).toBe(2);
-    const media = await app.request("/media/med1abcd");
-    expect(media.status).toBe(200);
+    expect((await app.request("/media/med1abcd")).status).toBe(200);
 
     // Second restore skips everything (merge, no dupes).
-    const fd2 = new FormData();
-    fd2.append("file", new File([full.buffer as ArrayBuffer], "b.tar.gz", { type: "application/gzip" }));
-    const res2 = await app.request("/restore", { method: "POST", body: fd2 });
+    const res2 = await app.request(`/backups/${stored.id}/restore`, { method: "POST" });
     const rep2 = (await res2.json()) as { imported: Record<string, number> };
     expect(Object.values(rep2.imported).every((n) => n === 0)).toBe(true);
   });
 
-  test("restore rejects garbage", async () => {
-    const fd = new FormData();
-    fd.append("file", new File(["hello"], "b.tar.gz", { type: "application/gzip" }));
-    const res = await app.request("/restore", { method: "POST", body: fd });
-    expect(res.status).toBe(422);
+  test("upload rejects garbage", async () => {
+    const up = await chunkedUpload(app, "backup", new TextEncoder().encode("hello"), { filename: "b.tar" });
+    expect(up.status).toBe(422);
   });
 
-  test("inspect reports contents without importing", async () => {
-    await seedMedia();
-    const full = new Uint8Array(await (await app.request("/backup?elements=1&generated=1&uploads=1")).arrayBuffer());
-    const fd = new FormData();
-    fd.append("file", new File([full.buffer as ArrayBuffer], "b.tar.gz", { type: "application/gzip" }));
-    const res = await app.request("/restore/inspect", { method: "POST", body: fd });
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { manifest: { version: number }; counts: Record<string, number> };
-    expect(json.manifest.version).toBe(1);
-    expect(json.counts).toMatchObject({ projects: 1, elements: 1, library: 2, jobs: 1, media: 1 });
-    // Nothing imported by inspecting.
-    expect(getDb().query("SELECT id FROM library WHERE project_id='prj_bk'").all().length).toBe(2);
-
-    const bad = new FormData();
-    bad.append("file", new File(["nope"], "b.tar.gz", { type: "application/gzip" }));
-    expect((await app.request("/restore/inspect", { method: "POST", body: bad })).status).toBe(422);
+  test("delete removes row and file", async () => {
+    const row = (await (await app.request("/backups", { method: "POST" })).json()) as { id: string };
+    expect((await app.request(`/backups/${row.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await app.request(`/backups/${row.id}`, { method: "DELETE" })).status).toBe(404);
+    const list = (await (await app.request("/backups")).json()) as { backups: unknown[] };
+    expect(list.backups).toEqual([]);
   });
 
   test("delete project removes children and hosted files", async () => {

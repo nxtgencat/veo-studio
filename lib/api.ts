@@ -77,6 +77,18 @@ export function authedMediaUrl(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(t)}`;
 }
 
+/**
+ * Direct download URL for a stored backup (anchor href, not fetch): the
+ * browser streams it with native progress instead of buffering a 1 GB blob
+ * in RAM first. Appends ?token= when the password gate is on — the server
+ * accepts it on this download-only route.
+ */
+export function backupFileUrl(id: string): string {
+  const base = `${apiBase()}/backups/${encodeURIComponent(id)}/download`;
+  const t = getAuthToken();
+  return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+}
+
 let unauthorizedHandler: (() => void) | null = null;
 export function onUnauthorized(fn: (() => void) | null) {
   unauthorizedHandler = fn;
@@ -98,19 +110,14 @@ function handleUnauthorized(res: Response) {
 }
 
 async function req<T>(path: string, init?: RequestInit, idempotencyKey?: string): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(`${apiPrefix(path)}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(init),
-        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-      },
-    });
-  } catch (e) {
-    throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
-  }
+  const res = await fetchApi(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(init),
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
+  });
   const json = (await res.json().catch(() => ({}))) as {
     error?: { code?: string; message?: string; details?: unknown };
   };
@@ -167,6 +174,105 @@ export interface ServerSettings {
   bucketLocation: string | null;
 }
 
+export interface StoredBackup {
+  id: string;
+  filename: string;
+  bytes: number;
+  counts: Record<string, number>;
+  created_at: string;
+}
+
+async function throwApiError(res: Response, fallbackCode: string, fallbackMsg: string): Promise<never> {
+  handleUnauthorized(res);
+  const json = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+  throw new ApiError(res.status, json.error?.code ?? fallbackCode, json.error?.message ?? `${fallbackMsg} (${res.status})`);
+}
+
+/**
+ * Single fetch core: auth headers + unreachable mapped once. Callers parse
+ * their own body / check res.ok via throwApiError. (Plain fetch has no
+ * upload progress or cancel semantics beyond AbortSignal — both upload
+ * call sites pass a signal for their Cancel buttons.)
+ */
+async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${apiPrefix(path)}`, { ...init, headers: authHeaders(init) });
+  } catch (e) {
+    throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
+  }
+}
+
+/** One-line error text for toasts: Error.message or String(e), optionally truncated. */
+export function errOf(e: unknown, max?: number): string {
+  const msg = e instanceof Error ? e.message : String(e ?? "Request failed");
+  return max == null ? msg : msg.slice(0, max);
+}
+
+/** 8 MiB parts: clears the 10 MB proxy default with headroom (server ceiling matches). */
+const CHUNK_SIZE = 8 * 1024 * 1024;
+
+async function putPart(uploadId: string, index: number, part: Blob, signal?: AbortSignal): Promise<void> {
+  const res = await fetchApi(`/uploads/${encodeURIComponent(uploadId)}/part?index=${index}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: part,
+    ...(signal ? { signal } : {}),
+  });
+  if (!res.ok) await throwApiError(res, "UPLOAD_FAILED", `Part ${index} failed`);
+}
+
+/**
+ * Chunked upload: init → sequential slices → complete. Each part retries
+ * 3×; any failure or abort deletes the server session. Progress is
+ * fractional by bytes. Blob.slice is zero-copy — the file is never
+ * buffered client-side.
+ */
+async function uploadChunked(
+  kind: "backup" | "media",
+  file: Blob,
+  opts: { filename?: string; mime?: string; signal?: AbortSignal; onProgress?: (frac: number) => void },
+): Promise<unknown> {
+  if (!file.size) throw new ApiError(400, "EMPTY_FILE", "Uploaded file is empty");
+  const { uploadId } = await req<{ uploadId: string }>("/uploads", {
+    method: "POST",
+    body: JSON.stringify({
+      kind,
+      filename: opts.filename ?? "upload",
+      mime: opts.mime ?? "application/octet-stream",
+      size: file.size,
+    }),
+  });
+  const fail = async (e: unknown): Promise<never> => {
+    await fetchApi(`/uploads/${encodeURIComponent(uploadId)}`, { method: "DELETE" }).catch(() => {});
+    throw e;
+  };
+  try {
+    let sent = 0;
+    for (let index = 0; sent < file.size; index++) {
+      opts.signal?.throwIfAborted();
+      const part = file.slice(sent, sent + CHUNK_SIZE);
+      let last: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await putPart(uploadId, index, part, opts.signal);
+          last = null;
+          break;
+        } catch (e) {
+          last = e;
+          if (opts.signal?.aborted) break;
+          await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+        }
+      }
+      if (last) throw last;
+      sent += part.size;
+      opts.onProgress?.(file.size ? sent / file.size : 1);
+    }
+    return await req(`/uploads/${encodeURIComponent(uploadId)}/complete`, { method: "POST" });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 export const api = {
   health: () => req<{ ok: boolean }>("/health"),
 
@@ -212,94 +318,53 @@ export const api = {
   importVideo: (body: { projectId: string; prompt: string; resolution: string; aspect: string; durationSeconds: number; audio: boolean; thumbDataUrl: string; mediaId?: string }) =>
     req<{ id: string }>("/library/import", { method: "POST", body: JSON.stringify(body) }),
 
-  uploadMedia: async (file: File): Promise<{ id: string; url: string; bytes: number; mime: string }> => {
-    let res: Response;
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      res = await fetch(`${apiPrefix("/media/upload")}`, { method: "POST", headers: authHeaders(), body: fd });
-    } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
-    }
-    const json = (await res.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
-      id?: string;
-      url?: string;
-      bytes?: number;
-      mime?: string;
-    };
-    if (!res.ok || !json.id || !json.url) {
-      handleUnauthorized(res);
-      throw new ApiError(res.status, json.error?.code ?? "UPLOAD_FAILED", json.error?.message ?? `Upload failed (${res.status})`);
+  uploadMedia: async (file: File, signal?: AbortSignal, onProgress?: (frac: number) => void): Promise<{ id: string; url: string; bytes: number; mime: string }> => {
+    const json = (await uploadChunked("media", file, {
+      filename: file.name || "upload",
+      mime: file.type || "application/octet-stream",
+      signal,
+      onProgress,
+    })) as { id?: string; url?: string; bytes?: number; mime?: string };
+    if (!json.id || !json.url) {
+      throw new ApiError(500, "UPLOAD_FAILED", "Upload completed without a file");
     }
     return { id: json.id, url: json.url, bytes: json.bytes ?? 0, mime: json.mime ?? "" };
   },
 
-  downloadBackup: async (opts: { elements: boolean; generated: boolean; uploads: boolean; projectId?: string }): Promise<{ blob: Blob; filename: string }> => {
-    const q = new URLSearchParams({
-      elements: opts.elements ? "1" : "0",
-      generated: opts.generated ? "1" : "0",
-      uploads: opts.uploads ? "1" : "0",
-      ...(opts.projectId ? { projectId: opts.projectId } : {}),
-    }).toString();
-    let res: Response;
-    try {
-      res = await fetch(`${apiPrefix(`/backup?${q}`)}`, { headers: authHeaders() });
-    } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
-    }
-    if (!res.ok) {
-      handleUnauthorized(res);
-      const json = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
-      throw new ApiError(res.status, json.error?.code ?? "BACKUP_FAILED", json.error?.message ?? `Backup failed (${res.status})`);
-    }
-    const cd = res.headers.get("content-disposition") ?? "";
-    const filename = /filename="([^"]+)"/.exec(cd)?.[1] ?? "veo-backup.tar";
-    return { blob: await res.blob(), filename };
+  listBackups: async (): Promise<{ backups: StoredBackup[] }> => {
+    const res = await fetchApi("/backups");
+    if (!res.ok) await throwApiError(res, "BACKUPS_FAILED", "Could not list backups");
+    return (await res.json()) as { backups: StoredBackup[] };
   },
 
-  restoreBackup: async (file: File): Promise<Record<string, Record<string, number>>> => {
-    let res: Response;
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      res = await fetch(`${apiPrefix("/restore")}`, { method: "POST", headers: authHeaders(), body: fd });
-    } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
-    }
+  buildBackup: async (): Promise<StoredBackup> => {
+    const res = await fetchApi("/backups", { method: "POST" });
+    if (!res.ok) await throwApiError(res, "BACKUP_FAILED", "Backup failed");
+    return (await res.json()) as StoredBackup;
+  },
+
+  uploadBackup: async (file: File, signal?: AbortSignal, onProgress?: (frac: number) => void): Promise<StoredBackup> => {
+    return (await uploadChunked("backup", file, {
+      filename: file.name || "upload.tar",
+      mime: "application/x-tar",
+      signal,
+      onProgress,
+    })) as StoredBackup;
+  },
+
+  restoreBackup: async (id: string): Promise<Record<string, Record<string, number>>> => {
+    const res = await fetchApi(`/backups/${encodeURIComponent(id)}/restore`, { method: "POST" });
     const json = (await res.json().catch(() => ({}))) as {
       error?: { code?: string; message?: string };
       imported?: Record<string, number>;
     };
-    if (!res.ok) {
-      handleUnauthorized(res);
-      throw new ApiError(res.status, json.error?.code ?? "RESTORE_FAILED", json.error?.message ?? `Restore failed (${res.status})`);
-    }
+    if (!res.ok) await throwApiError(res, json.error?.code ?? "RESTORE_FAILED", json.error?.message ?? "Restore failed");
     return json as Record<string, Record<string, number>>;
   },
 
-  inspectBackup: async (file: File): Promise<{
-    manifest: { exportedAt: string; includes: Record<string, boolean> };
-    counts: Record<string, number>;
-  }> => {
-    let res: Response;
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      res = await fetch(`${apiPrefix("/restore/inspect")}`, { method: "POST", headers: authHeaders(), body: fd });
-    } catch (e) {
-      throw new ApiError(0, "SERVER_UNREACHABLE", `API server unreachable at ${apiOrigin} — is it running?`, String(e));
-    }
-    const json = (await res.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
-      manifest?: { exportedAt: string; includes: Record<string, boolean> };
-      counts?: Record<string, number>;
-    };
-    if (!res.ok || !json.manifest || !json.counts) {
-      handleUnauthorized(res);
-      throw new ApiError(res.status, json.error?.code ?? "INSPECT_FAILED", json.error?.message ?? `Could not read backup (${res.status})`);
-    }
-    return { manifest: json.manifest, counts: json.counts };
+  deleteBackup: async (id: string): Promise<void> => {
+    const res = await fetchApi(`/backups/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res.ok) await throwApiError(res, "DELETE_FAILED", "Delete failed");
   },
 
   authStatus: async (): Promise<{ required: boolean }> => {
