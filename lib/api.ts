@@ -248,7 +248,7 @@ export const api = {
       throw new ApiError(res.status, json.error?.code ?? "BACKUP_FAILED", json.error?.message ?? `Backup failed (${res.status})`);
     }
     const cd = res.headers.get("content-disposition") ?? "";
-    const filename = /filename="([^"]+)"/.exec(cd)?.[1] ?? "veo-backup.tar.gz";
+    const filename = /filename="([^"]+)"/.exec(cd)?.[1] ?? "veo-backup.tar";
     return { blob: await res.blob(), filename };
   },
 

@@ -22,6 +22,9 @@ export default {
   port,
   hostname,
   fetch: app.fetch,
+  // Builds/restores of ~1 GB archives outlast Bun's 10s default — idle
+  // sockets get killed mid-response (surfaced as proxy socket hang-ups).
+  idleTimeout: 120,
 };
 
 logger.info({ port, hostname }, "veo headless server listening");

@@ -1,4 +1,8 @@
-// Full backup & restore (tar.gz via Bun.Archive).
+// Full backup & restore (plain tar via Bun.Archive).
+// Deliberately UNCOMPRESSED: payloads are mp4s that gzip can't shrink
+// (measured: 21s gzipped vs 1s plain on ~1 GB, same bytes out). gzip also
+// pushed archives over the restore cap and outlasted the server idle timeout,
+// which surfaced as proxy socket hang-ups on full backups.
 // Scope toggles — projects + settings always included:
 //   elements: element rows (images are inline data-URLs already)
 //   generated: library rows (model != import) + terminal jobs + their media
@@ -113,8 +117,22 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
   files["manifest.json"] = JSON.stringify(manifest, null, 2);
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  const archive = new Bun.Archive(files, { compress: "gzip" });
-  return { filename: `veo-backup-${stamp}.tar.gz`, bytes: await archive.bytes() };
+  // Fail fast before archiving: JSON thumbs/posters count toward the cap too.
+  let jsonBytes = 0;
+  for (const v of Object.values(files)) jsonBytes += typeof v === "string" ? v.length : v.byteLength;
+  if (mediaTotal + jsonBytes > BACKUP_MAX_BYTES) {
+    throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
+      code: "E_BACKUP_TOO_LARGE",
+    });
+  }
+  const archive = new Bun.Archive(files);
+  const bytes = await archive.bytes();
+  if (bytes.length > BACKUP_MAX_BYTES) {
+    throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
+      code: "E_BACKUP_TOO_LARGE",
+    });
+  }
+  return { filename: `veo-backup-${stamp}.tar`, bytes };
 }
 
 const JSON_FILE = /^(manifest|projects|settings|elements|library|jobs|media)\.json$/;

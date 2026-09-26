@@ -576,7 +576,7 @@ app.get("/backup", async (c) => {
     const { filename, bytes } = await buildBackup(opts);
     return new Response(bytes, {
       headers: {
-        "Content-Type": "application/gzip",
+        "Content-Type": "application/x-tar",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
@@ -626,7 +626,7 @@ app.post("/restore/inspect", async (c) => {
 async function readArchiveBody(c: any): Promise<Uint8Array | string | null> {
   const form = await c.req.formData().catch(() => null);
   const file = form?.get("file");
-  if (!(file instanceof Blob)) return "Multipart field 'file' (.tar.gz) is required";
+  if (!(file instanceof Blob)) return "Multipart field 'file' (.tar) is required";
   if (file.size > BACKUP_MAX_BYTES) return null;
   return new Uint8Array(await file.arrayBuffer());
 }

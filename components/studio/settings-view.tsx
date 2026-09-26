@@ -399,7 +399,7 @@ function BackupCard() {
       <SlateCard>
         <SlateCardHeader>
           <h3 className="font-display font-bold text-[13.5px]">Backup & restore</h3>
-          <SlateBadge tone="draft">tar.gz</SlateBadge>
+          <SlateBadge tone="draft">tar</SlateBadge>
         </SlateCardHeader>
       <div className="p-4 space-y-3">
         <p className="text-[11.5px] text-muted leading-relaxed">
@@ -423,7 +423,7 @@ function BackupCard() {
             <Upload className="size-3.5" /> Restore
             <input
               type="file"
-              accept=".tar.gz,.tgz,application/gzip"
+              accept=".tar,.tar.gz,.tgz,application/gzip,application/x-tar"
               className="hidden"
               disabled={busy}
               onChange={(e) => {
