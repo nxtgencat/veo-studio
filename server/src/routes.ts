@@ -317,7 +317,10 @@ app.get("/jobs", (c) => {
   const rows = projectId
     ? (db.query("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 200").all(projectId) as any[])
     : (db.query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200").all() as any[]);
-  return c.json({ jobs: rows.map(formatJob) });
+  // ETA depends only on (model, resolution) — memoize per request instead of
+  // one query per row (200 rows sharing a few models = 200 queries before).
+  const etaCache = new Map<string, { etaMs: number; source: "measured" | "estimated" }>();
+  return c.json({ jobs: rows.map((r) => formatJob(r, etaCache)) });
 });
 
 app.delete("/jobs/:id", (c) => {
@@ -344,8 +347,14 @@ app.post("/jobs/:id/cancel", async (c) => {
   });
 });
 
-function formatJob(row: any) {
-  const { etaMs, source } = jobEta(row.model, row.resolution);
+function formatJob(row: any, etaCache?: Map<string, { etaMs: number; source: "measured" | "estimated" }>) {
+  const key = `${row.model}|${row.resolution}`;
+  let eta = etaCache?.get(key);
+  if (!eta) {
+    eta = jobEta(row.model, row.resolution);
+    etaCache?.set(key, eta);
+  }
+  const { etaMs, source } = eta;
   return {
     id: row.id,
     projectId: row.project_id,
@@ -429,17 +438,22 @@ app.get("/media/:id", (c) => {
 });
 
 // ---------- library ----------
+// On-disk bytes ride along via LEFT JOIN (one query, no N+1): media.id is the
+// tail of a hosted video_url ("/media/<id>"); gs:// and empty URLs match
+// nothing and yield NULL.
+const LIBRARY_WITH_BYTES = "library.*, media.bytes AS bytes FROM library LEFT JOIN media ON media.id = substr(library.video_url, 8)";
+
 app.get("/library", (c) => {
   const projectId = c.req.query("projectId");
   const db = getDb();
   const rows = projectId
-    ? (db.query("SELECT * FROM library WHERE project_id=? ORDER BY created_at DESC").all(projectId) as any[])
-    : (db.query("SELECT * FROM library ORDER BY created_at DESC LIMIT 200").all() as any[]);
+    ? (db.query(`SELECT ${LIBRARY_WITH_BYTES} WHERE library.project_id=? ORDER BY library.created_at DESC`).all(projectId) as any[])
+    : (db.query(`SELECT ${LIBRARY_WITH_BYTES} ORDER BY library.created_at DESC LIMIT 200`).all() as any[]);
   return c.json({ videos: rows });
 });
 
 app.get("/library/:id", (c) => {
-  const row = getDb().query("SELECT * FROM library WHERE id=?").get(c.req.param("id")) as any;
+  const row = getDb().query(`SELECT ${LIBRARY_WITH_BYTES} WHERE library.id=?`).get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
   return c.json(row);
 });

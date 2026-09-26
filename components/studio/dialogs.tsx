@@ -7,7 +7,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
-import { ago, expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
+import { ago, expectedDur, fmtBytes, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
 import { api, authedMediaUrl } from "@/lib/api";
@@ -345,6 +345,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const cfg: [string, string][] = [
     ["Model", (v.model === "import" ? "Upload" : m.label) + (m.retires && v.model !== "import" ? " · retires Jun 30" : "")],
     ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDur(srcVideo, (id) => project.library.find((x) => x.id === id)) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
+    ["Size", fmtBytes(v.size)],
     ["Audio", v.audio ? "On" : "Off"],
     ["Seed", v.seed === "" || v.seed == null ? "random" : String(v.seed)],
     ["Person", v.person === "disallow" ? "Disallow" : "Allow adults"],

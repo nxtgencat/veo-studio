@@ -66,6 +66,7 @@ export const videoItemSchema = z.object({
   aspect: z.string(),
   dur: z.number(),
   durActual: z.number().nullable().optional(),
+  size: z.number().nullable().optional(),
   audio: z.boolean(),
   seed: z.union([z.string(), z.number()]),
   person: z.string(),

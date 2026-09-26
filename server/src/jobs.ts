@@ -413,10 +413,9 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
   failJob(jobId, "POLL_TIMEOUT: Vertex operation did not complete in time; poll GET /jobs/:id to retry later");
 }
 
-function stampDuration(jobId: string, submittedAt: string): number {
-  const ms = submittedAt ? Date.now() - Date.parse(submittedAt) : 0;
-  getDb().query("UPDATE jobs SET duration_ms=? WHERE id=?").run(ms, jobId);
-  return ms;
+/** Elapsed ms since submit — folded into terminal UPDATEs so success/failure cost one write. */
+function terminalMs(submittedAt: string): number {
+  return submittedAt ? Math.max(0, Date.now() - Date.parse(submittedAt)) : 0;
 }
 
 async function succeedJob(
@@ -433,8 +432,7 @@ async function succeedJob(
   const gs = videoUris.find((u) => u.startsWith("gs://")) ?? "";
   const stored = await materializeOutput(row.project_id, gs, inline);
   const now = nowIso();
-  const libId = Bun.randomUUIDv7();
-  // Extend appends +7s to the source: the library row must carry the TOTAL
+  const libId = Bun.randomUUIDv7();  // Extend appends +7s to the source: the library row must carry the TOTAL
   // (8s source -> 15s row, chained 15s -> 22s), not just the 7s chunk.
   // Resolved from the DB so chains stay correct even if the client sent a
   // stale duration. Falls back to the job chunk when the source is gone.
@@ -450,8 +448,9 @@ async function succeedJob(
       }
     } catch { /* keep chunk duration */ }
   }
-  db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
-  stampDuration(jobId, row.submitted_at);
+  db.query("UPDATE jobs SET status='succeeded', progress=100, duration_ms=?, updated_at=? WHERE id=?").run(
+    terminalMs(row.submitted_at), now, jobId,
+  );
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
       duration_seconds, actual_duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, person, negative_prompt, inputs_json, vertex_operation, created_at, updated_at)
@@ -510,8 +509,9 @@ function failJob(jobId: string, error: string) {
   try {
     const db = getDb();
     const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
-    db.query("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(error, nowIso(), jobId);
-    if (row?.submitted_at) stampDuration(jobId, row.submitted_at);
+    db.query("UPDATE jobs SET status='failed', error=?, duration_ms=?, updated_at=? WHERE id=?").run(
+      error, terminalMs(row?.submitted_at ?? ""), nowIso(), jobId,
+    );
     log.error({ jobId, error }, "job failed");
     if (row?.webhook_url) fireWebhook(row.webhook_url, { jobId, status: "failed", error });
   } catch (e) {

@@ -38,6 +38,19 @@ export function hasDurGap(expected: number, actual?: number | null): boolean {
   return actual != null && actual > 0 && Math.abs(actual - (Number(expected) || 0)) >= 0.5;
 }
 
+/** Disk size: 29.7 MB, 800 KB, 0 → "—". */
+export function fmtBytes(n?: number | null): string {
+  if (!(Number(n) > 0)) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let v = Number(n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v >= 100 ? Math.round(v) : Math.round(v * 10) / 10} ${units[i]}`;
+}
+
 type DurNode = Pick<VideoItem, "id" | "mode" | "dur" | "inputs">;
 
 /**

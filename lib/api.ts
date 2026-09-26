@@ -137,6 +137,7 @@ export interface ServerVideo {
   prompt: string; resolution: string; aspect: string; duration_seconds: number;
   actual_duration_seconds: number | null;
   audio: number; status: string; cost_estimate: number; video_url: string;
+  bytes: number | null;
   thumb_url: string; person: string; negative_prompt: string;
   inputs_json: string; vertex_operation: string;
   created_at: string; updated_at: string;

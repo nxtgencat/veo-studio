@@ -86,6 +86,8 @@ export function migrate(d: Database) {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_library_project ON library(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_model ON jobs(model, created_at);
+    CREATE INDEX IF NOT EXISTS idx_library_video_url ON library(video_url);
     CREATE TABLE IF NOT EXISTS project_settings (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       sa_json TEXT NOT NULL DEFAULT '',
@@ -128,6 +130,9 @@ export function migrate(d: Database) {
       d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
     }
   }
+  // Indexes added after launch — backfill existing databases.
+  d.exec("CREATE INDEX IF NOT EXISTS idx_jobs_model ON jobs(model, created_at)");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_library_video_url ON library(video_url)");
 }
 
 export function resetDbForTests() {
