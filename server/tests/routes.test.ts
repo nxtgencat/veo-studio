@@ -243,6 +243,9 @@ describe("routes", () => {
           bucket: "my-veo-out-1",
           useBucket: true,
           authMode: "service_account",
+          ytClientId: "123.apps.googleusercontent.com",
+          ytPrivacy: "unlisted",
+          ytCategory: "28",
         }),
       });
       expect(good.status).toBe(200);
@@ -253,6 +256,24 @@ describe("routes", () => {
       expect(got.saEmail).toBe("e@p.iam.gserviceaccount.com");
       expect(got).not.toHaveProperty("saJson");
       expect(got).not.toHaveProperty("private_key");
+      // YouTube publish config round-trips server-side (client ID is public by design).
+      expect(got.ytClientId).toBe("123.apps.googleusercontent.com");
+      expect(got.ytPrivacy).toBe("unlisted");
+      expect(got.ytCategory).toBe("28");
+      // YouTube-only patches verify nothing live (no SA/bucket check runs).
+      const ytOnly = await app.request("/projects/prj_routes/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ytPrivacy: "private" }),
+      });
+      expect(ytOnly.status).toBe(200);
+      expect(((await ytOnly.json()) as Record<string, unknown>).ytPrivacy).toBe("private");
+      const badYt = await app.request("/projects/prj_routes/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ytPrivacy: "everyone" }),
+      });
+      expect(badYt.status).toBe(422);
     } finally {
       (globalThis as any).fetch = orig;
     }

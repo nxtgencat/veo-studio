@@ -172,6 +172,9 @@ export interface ServerSettings {
   saEmail: string | null;
   saProjectId: string | null;
   bucketLocation: string | null;
+  ytClientId: string;
+  ytPrivacy: "private" | "unlisted" | "public";
+  ytCategory: string;
 }
 
 export interface StoredBackup {

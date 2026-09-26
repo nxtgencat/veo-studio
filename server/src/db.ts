@@ -99,6 +99,9 @@ export function migrate(d: Database) {
       bucket TEXT NOT NULL DEFAULT '',
       use_bucket INTEGER NOT NULL DEFAULT 1,
       auth_mode TEXT NOT NULL DEFAULT 'service_account',
+      yt_client_id TEXT NOT NULL DEFAULT '',
+      yt_privacy TEXT NOT NULL DEFAULT 'unlisted',
+      yt_category TEXT NOT NULL DEFAULT '22',
       updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS media (
@@ -136,6 +139,11 @@ export function migrate(d: Database) {
     ["library", "negative_prompt", "TEXT NOT NULL DEFAULT ''"],
     // Probed container duration (NULL = unknown / pre-probe row).
     ["library", "actual_duration_seconds", "REAL"],
+    // YouTube publishing config (server truth, like bucket — client ID is
+    // public by design, unlike the SA key).
+    ["project_settings", "yt_client_id", "TEXT NOT NULL DEFAULT ''"],
+    ["project_settings", "yt_privacy", "TEXT NOT NULL DEFAULT 'unlisted'"],
+    ["project_settings", "yt_category", "TEXT NOT NULL DEFAULT '22'"],
   ] as const) {
     const existing = d.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!existing.some((c) => c.name === column)) {

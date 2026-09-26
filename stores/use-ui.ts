@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { Toast as ToastPrimitive } from "@base-ui/react/toast";
 import { api, type StoredBackup } from "@/lib/api";
+import type { YtAccountState, YtChannelMeta } from "@/lib/youtube";
 
 export type ToastTone = "ok" | "danger" | "info" | "pending" | "draft" | "brand";
 
@@ -55,21 +56,87 @@ export const useToasts = create<ToastState>()(() => ({
   },
 }));
 
-// YouTube token lives in memory only — never persisted (matches reference behavior).
+// YouTube session persists in this browser only (localStorage) — never on the
+// server, never anywhere except Google's APIs. The access token itself
+// expires ~1h after Google issues it; the channel identity outlives it so
+// the UI can tell "session expired" apart from "never connected".
+const YT_KEY = "veo-yt";
+
+interface YtPersisted {
+  token: string;
+  exp: number;
+  channel: string;
+  meta: YtChannelMeta | null;
+  account: YtAccountState;
+  detail: string;
+}
+
+function loadYt(): YtPersisted {
+  const empty: YtPersisted = { token: "", exp: 0, channel: "", meta: null, account: "unknown", detail: "" };
+  try {
+    if (typeof window === "undefined") return empty;
+    const raw = window.localStorage.getItem(YT_KEY);
+    if (!raw) return empty;
+    const p = JSON.parse(raw) as Partial<YtPersisted>;
+    return {
+      token: typeof p.token === "string" ? p.token : "",
+      exp: typeof p.exp === "number" ? p.exp : 0,
+      channel: typeof p.channel === "string" ? p.channel : "",
+      meta: p.meta && typeof p.meta === "object" ? (p.meta as YtChannelMeta) : null,
+      account: p.account === "ok" || p.account === "no-channel" || p.account === "error" ? p.account : "unknown",
+      detail: typeof p.detail === "string" ? p.detail : "",
+    };
+  } catch {
+    return empty; // private mode — memory only
+  }
+}
+
+function saveYt(p: YtPersisted): void {
+  try {
+    window.localStorage.setItem(YT_KEY, JSON.stringify(p));
+  } catch { /* private mode — memory only */ }
+}
+
+export interface YtAuthInput {
+  token: string;
+  exp: number;
+  channel?: string;
+  meta?: YtChannelMeta | null;
+  account?: YtAccountState;
+  detail?: string;
+}
+
 interface YtAuthState {
   token: string;
   exp: number;
   channel: string;
-  setAuth: (token: string, exp: number, channel?: string) => void;
+  meta: YtChannelMeta | null;
+  account: YtAccountState;
+  detail: string;
+  setAuth: (auth: YtAuthInput) => void;
   clear: () => void;
 }
 
+const YT_EMPTY = { token: "", exp: 0, channel: "", meta: null, account: "unknown", detail: "" } as const;
+
 export const useYtAuth = create<YtAuthState>()((set) => ({
-  token: "",
-  exp: 0,
-  channel: "",
-  setAuth: (token, exp, channel = "") => set({ token, exp, channel }),
-  clear: () => set({ token: "", exp: 0, channel: "" }),
+  ...loadYt(),
+  setAuth: (auth) => {
+    const next = {
+      token: auth.token,
+      exp: auth.exp,
+      channel: auth.channel ?? "",
+      meta: auth.meta ?? null,
+      account: auth.account ?? "unknown",
+      detail: auth.detail ?? "",
+    };
+    saveYt(next);
+    set(next);
+  },
+  clear: () => {
+    saveYt({ ...YT_EMPTY });
+    set({ ...YT_EMPTY });
+  },
 }));
 
 // Backup files live on the server: build one, upload yours, then

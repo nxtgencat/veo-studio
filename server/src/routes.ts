@@ -217,6 +217,11 @@ function settingsBody(pid: string): Record<string, unknown> {
     saEmail,
     saProjectId,
     bucketLocation: null as string | null,
+    // YouTube publish config: the OAuth client ID is public by design
+    // (Google requires it in JS origins), so unlike the SA key it ships back.
+    ytClientId: s.ytClientId,
+    ytPrivacy: s.ytPrivacy,
+    ytCategory: s.ytCategory,
   };
 }
 
@@ -233,6 +238,9 @@ const settingsSchema = z.object({
   bucket: z.string().max(63).optional(),
   useBucket: z.boolean().optional(),
   authMode: z.enum(["service_account", "env"]).optional(),
+  ytClientId: z.string().max(200).optional(),
+  ytPrivacy: z.enum(["private", "unlisted", "public"]).optional(),
+  ytCategory: z.string().max(10).optional(),
 });
 
 app.patch("/projects/:id/settings", async (c) => {
@@ -270,8 +278,19 @@ const lastBucketCheck = new Map<string, { location: string } | null>();
 
 async function verifySettingsLive(
   projectId: string,
-  patch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" },
+  patch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env"; ytClientId?: string; ytPrivacy?: string; ytCategory?: string },
 ): Promise<void> {
+  // YouTube-only patches carry no credentials — nothing to verify live.
+  // (Without this, saving publish prefs would re-verify the SA key and a
+  // dead stored key would block it.)
+  if (
+    patch.saJson === undefined &&
+    patch.bucket === undefined &&
+    patch.authMode === undefined &&
+    patch.useBucket === undefined
+  ) {
+    return;
+  }
   const stored = getSettings(projectId);
   const authMode = patch.authMode ?? stored.authMode;
   // Explicit clear ("") must never exchange the STORED key: a dead stored key

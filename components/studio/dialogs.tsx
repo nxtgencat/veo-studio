@@ -12,7 +12,7 @@ import { expectedDurOf, modelOf } from "@/lib/pricing";
 import { captureAt, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
 import { authedMediaUrl, errOf } from "@/lib/api";
 import { uploadVideoFile } from "@/lib/upload-video";
-import { ytConnectWithChannel, ytUploadVideo, ytVideoState } from "@/lib/youtube";
+import { isAuthFailure, withYtAuth, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
 import { pushErr, useToasts, useYtAuth } from "@/stores/use-ui";
@@ -717,7 +717,14 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
             pushErr("YouTube processing failed", (patch.fail || "").slice(0, 160));
           }
         })
-        .catch(() => {});
+        .catch((e) => {
+          // Dead token mid-poll: stop (no auto-popup — browsers block
+          // non-gesture popups) and point at Refresh, which reconnects.
+          if (isAuthFailure(e)) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            push("YouTube session expired — open the video and Refresh to reconnect", { icon: "!" });
+          }
+        });
     };
     tick();
     pollRef.current = setInterval(tick, 15000);
@@ -729,13 +736,9 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       push("Nothing published yet", { icon: "▶", tone: "info" });
       return;
     }
-    const tok = useYtAuth.getState().token;
-    if (!tok) {
-      pushErr("Connect YouTube first");
-      return;
-    }
     push("Refreshing YouTube status…", { icon: "…" });
-    ytVideoState(tok, id)
+    // Click gesture: reconnects first when the token is dead.
+    withYtAuth(project.settings.ytClientId || "", (tok) => ytVideoState(tok, id))
       .then((item) => {
         const patch = ytPatch(item);
         saveYt(patch);
@@ -759,23 +762,18 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
     setBusy(true);
     setPct(0);
     try {
-      let tok = useYtAuth.getState().token;
-      const exp = useYtAuth.getState().exp;
-      if (!tok || exp <= Date.now()) {
-        const c = await ytConnectWithChannel(project.settings.ytClientId || "");
-        useYtAuth.getState().setAuth(c.token, c.exp, c.channel);
-        tok = c.token;
-      }
       const res = await fetch(authedMediaUrl(v.url));
       if (!res.ok) throw new Error(`Fetch failed (${res.status}) — re-upload the file.`);
       const blob = await res.blob();
       if (!blob.size) throw new Error("Empty file — re-upload it.");
       saveYt({ title: parsed.data.title.slice(0, 100), description: parsed.data.description.slice(0, 4900), privacy, state: "uploading", pct: 0, startedAt: Date.now() });
-      const out = await ytUploadVideo({
+      // Click gesture: reconnects first when the token is dead, and once more
+      // on a mid-upload 401 (fresh session, restarted — tokens live ~1h, uploads minutes).
+      const out = await withYtAuth(project.settings.ytClientId || "", (tok) => ytUploadVideo({
         token: tok, file: blob, title: parsed.data.title.slice(0, 100), description: parsed.data.description.slice(0, 4900),
         tags: ["AI video", "Veo", modelOf(v.model).label], categoryId: project.settings.ytCategory || "22",
         privacy, madeForKids: false, synthetic: true, onProgress: (pc) => { setPct(pc); saveYt({ pct: pc }); },
-      });
+      }));
       const id = out?.id;
       if (!id) throw new Error("YouTube accepted the upload but returned no video ID.");
       const patch = { videoId: id, url: `https://youtu.be/${id}`, state: "processing", uploadStatus: "uploaded", processingStatus: "processing", pct: 100, publishedAt: Date.now() };

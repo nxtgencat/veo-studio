@@ -25,7 +25,12 @@ export interface StoredSettings {
   useBucket: boolean;
   authMode: AuthMode;
   saJson: string;
+  ytClientId: string;
+  ytPrivacy: string;
+  ytCategory: string;
 }
+
+const YT_PRIVACIES = ["private", "unlisted", "public"] as const;
 
 export function parseSaJson(raw: string): SaCreds {
   let j: unknown;
@@ -48,27 +53,47 @@ export function parseSaJson(raw: string): SaCreds {
 
 export function getSettings(projectId: string): StoredSettings {
   const row = getDb()
-    .query("SELECT sa_json, bucket, use_bucket, auth_mode FROM project_settings WHERE project_id=?")
-    .get(projectId) as { sa_json: string; bucket: string; use_bucket: number; auth_mode: string } | null;
-  if (!row) return { bucket: "", useBucket: true, authMode: "service_account", saJson: "" };
+    .query("SELECT sa_json, bucket, use_bucket, auth_mode, yt_client_id, yt_privacy, yt_category FROM project_settings WHERE project_id=?")
+    .get(projectId) as {
+      sa_json: string; bucket: string; use_bucket: number; auth_mode: string;
+      yt_client_id: string; yt_privacy: string; yt_category: string;
+    } | null;
+  if (!row) {
+    return { bucket: "", useBucket: true, authMode: "service_account", saJson: "", ytClientId: "", ytPrivacy: "unlisted", ytCategory: "22" };
+  }
   return {
     bucket: row.bucket ?? "",
     useBucket: !!row.use_bucket,
     authMode: row.auth_mode === "env" ? "env" : "service_account",
     saJson: row.sa_json ?? "",
+    ytClientId: row.yt_client_id ?? "",
+    ytPrivacy: row.yt_privacy ?? "unlisted",
+    ytCategory: row.yt_category ?? "22",
   };
 }
 
 export function saveSettings(
   projectId: string,
-  patch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: AuthMode },
+  patch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: AuthMode; ytClientId?: string; ytPrivacy?: string; ytCategory?: string },
 ): void {
   const cur = getSettings(projectId);
+  if (patch.ytPrivacy !== undefined && !(YT_PRIVACIES as readonly string[]).includes(patch.ytPrivacy)) {
+    throw Object.assign(new Error(`ytPrivacy must be one of ${YT_PRIVACIES.join("|")}`), { code: "E_YT_PRIVACY" });
+  }
+  if (patch.ytClientId !== undefined && patch.ytClientId.length > 200) {
+    throw Object.assign(new Error("ytClientId exceeds 200 characters"), { code: "E_YT_CLIENT_ID" });
+  }
+  if (patch.ytCategory !== undefined && patch.ytCategory.length > 10) {
+    throw Object.assign(new Error("ytCategory exceeds 10 characters"), { code: "E_YT_CATEGORY" });
+  }
   const next = {
     saJson: patch.saJson !== undefined ? patch.saJson : cur.saJson,
     bucket: patch.bucket !== undefined ? patch.bucket : cur.bucket,
     useBucket: patch.useBucket !== undefined ? patch.useBucket : cur.useBucket,
     authMode: patch.authMode !== undefined ? patch.authMode : cur.authMode,
+    ytClientId: patch.ytClientId !== undefined ? patch.ytClientId.trim() : cur.ytClientId,
+    ytPrivacy: patch.ytPrivacy !== undefined ? patch.ytPrivacy : cur.ytPrivacy,
+    ytCategory: patch.ytCategory !== undefined ? patch.ytCategory : cur.ytCategory,
   };
   if (next.saJson.trim()) parseSaJson(next.saJson);
   if (next.bucket.trim() && !/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/.test(next.bucket.trim())) {
@@ -76,12 +101,13 @@ export function saveSettings(
   }
   getDb()
     .query(
-      `INSERT INTO project_settings (project_id, sa_json, bucket, use_bucket, auth_mode, updated_at)
-       VALUES (?,?,?,?,?,?)
+      `INSERT INTO project_settings (project_id, sa_json, bucket, use_bucket, auth_mode, yt_client_id, yt_privacy, yt_category, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
        ON CONFLICT(project_id) DO UPDATE SET sa_json=excluded.sa_json, bucket=excluded.bucket,
-         use_bucket=excluded.use_bucket, auth_mode=excluded.auth_mode, updated_at=excluded.updated_at`,
+         use_bucket=excluded.use_bucket, auth_mode=excluded.auth_mode, yt_client_id=excluded.yt_client_id,
+         yt_privacy=excluded.yt_privacy, yt_category=excluded.yt_category, updated_at=excluded.updated_at`,
     )
-    .run(projectId, next.saJson, next.bucket.trim(), next.useBucket ? 1 : 0, next.authMode, nowIso());
+    .run(projectId, next.saJson, next.bucket.trim(), next.useBucket ? 1 : 0, next.authMode, next.ytClientId, next.ytPrivacy, next.ytCategory, nowIso());
 }
 
 function b64url(data: Uint8Array): string {

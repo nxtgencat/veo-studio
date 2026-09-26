@@ -8,7 +8,7 @@ import { YT_CATS, YT_PRIVS } from "@/lib/catalog";
 import { ago, fmtBytes } from "@/lib/format";
 import { backupFileUrl, errOf } from "@/lib/api";
 import { rateFor } from "@/lib/pricing";
-import { ytCatLabel, ytConnectWithChannel } from "@/lib/youtube";
+import { refreshYtAccount, ytCatLabel, ytConnectWithChannel, ytErrorHint, ytRevokeAccess } from "@/lib/youtube";
 import { useStudio } from "@/stores/use-studio";
 import { pushErr, useBackup, useToasts, useYtAuth } from "@/stores/use-ui";
 import { SlateBadge } from "@/components/slate/badge";
@@ -42,6 +42,8 @@ export function SettingsView() {
   const [ytPriv, setYtPriv] = useState(project?.settings.ytPrivacy ?? "unlisted");
   const [ytCat, setYtCat] = useState(project?.settings.ytCategory ?? "22");
   const [ytBusy, setYtBusy] = useState(false);
+  const [ytAppBusy, setYtAppBusy] = useState(false);
+  const [ytPrefsBusy, setYtPrefsBusy] = useState(false);
   const [saBusy, setSaBusy] = useState(false);
   const [bktBusy, setBktBusy] = useState(false);
   const [togBusy, setTogBusy] = useState(false);
@@ -58,11 +60,40 @@ export function SettingsView() {
     setSa("");
     setBucket("");
     setAuthMode(project?.settings.authMode ?? "service_account");
+    setYtId(project?.settings.ytClientId ?? "");
+    setYtPriv(project?.settings.ytPrivacy ?? "unlisted");
+    setYtCat(project?.settings.ytCategory ?? "22");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
 
+  // Heal sessions connected before account state existed (or when the check
+  // failed): token is live but nothing is known — check once, persist.
+  const ytLive = !!yt.token && yt.exp > Date.now();
+  const [ytCheckBusy, setYtCheckBusy] = useState(false);
+  useEffect(() => {
+    if (ytLive && yt.token && yt.account !== "ok") {
+      void refreshYtAccount();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ytLive]);
+
+  const retryYtCheck = () => {
+    if (ytCheckBusy || !useYtAuth.getState().token) return;
+    setYtCheckBusy(true);
+    void refreshYtAccount().finally(() => setYtCheckBusy(false));
+  };
+
   if (!project) return null;
   const connected = !!yt.token && yt.exp > Date.now();
+  // OAuth app truth lives server-side (client ID is public by design).
+  const ytAppId = project.settings.ytClientId ?? "";
+  // Channel metadata (one channels.list at connect, 1 quota unit).
+  const ytStats = yt.meta ? [
+    yt.meta.subs != null ? `${yt.meta.subs.toLocaleString()} subs` : "",
+    yt.meta.videos != null ? `${yt.meta.videos.toLocaleString()} videos` : "",
+    yt.meta.views != null ? `${yt.meta.views.toLocaleString()} views` : "",
+  ].filter(Boolean).join(" · ") : "";
+  const ytSub = yt.meta ? [yt.meta.handle, ytStats].filter(Boolean).join(" · ") : "";
 
   const saveSa = () => {
     if (saBusy) return;
@@ -112,26 +143,52 @@ export function SettingsView() {
       (e) => pushErr("Disconnect failed", errOf(e, 140)),
     ).finally(() => setBktBusy(false));
   };
-  const saveYt = () => {
-    void saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
-      () => push("YouTube settings saved", { icon: "✓" }),
+  // YouTube OAuth app card: save/disconnect the client ID (like the SA key card).
+  const saveYtApp = () => {
+    const id = ytId.trim();
+    if (ytAppBusy || !id) return;
+    setYtAppBusy(true);
+    void saveSettings({ ytClientId: id }).then(
+      () => {
+        setYtId("");
+        push("YouTube OAuth app saved", { icon: "✓" });
+      },
       (e) => pushErr("Save failed", errOf(e, 140)),
-    );
+    ).finally(() => setYtAppBusy(false));
   };
+  const clearYtApp = () => {
+    if (ytAppBusy) return;
+    setYtAppBusy(true);
+    // The token was minted for this client — sign the account out too.
+    ytRevokeAccess(useYtAuth.getState().token);
+    useYtAuth.getState().clear();
+    void saveSettings({ ytClientId: "" }).then(
+      () => push("YouTube OAuth app disconnected", { icon: "▶", tone: "info" }),
+      (e) => pushErr("Disconnect failed", errOf(e, 140)),
+    ).finally(() => setYtAppBusy(false));
+  };
+  // Publishing account card: publish defaults (like the bucket card).
+  const saveYtPrefs = () => {
+    if (ytPrefsBusy) return;
+    setYtPrefsBusy(true);
+    void saveSettings({ ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
+      () => push("Publishing defaults saved", { icon: "✓" }),
+      (e) => pushErr("Save failed", errOf(e, 140)),
+    ).finally(() => setYtPrefsBusy(false));
+  };
+  // The account depends on the app (like the bucket depends on auth):
+  // Connect uses the saved client ID, never a draft.
   const ytGo = async () => {
     if (ytBusy) return;
-    setYtBusy(true);
-    try {
-      await saveSettings({ ytClientId: ytId.trim(), ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat });
-    } catch (e) {
-      pushErr("Save failed", errOf(e, 140));
-      setYtBusy(false);
+    if (!ytAppId) {
+      pushErr("Save your OAuth Client ID in the YouTube OAuth app card first");
       return;
     }
+    setYtBusy(true);
     try {
-      const { token, exp, channel } = await ytConnectWithChannel(ytId);
-      useYtAuth.getState().setAuth(token, exp, channel);
-      push(channel ? `Connected as ${channel}` : "YouTube connected", { icon: "▶" });
+      const c = await ytConnectWithChannel(ytAppId);
+      useYtAuth.getState().setAuth({ token: c.token, exp: c.exp, channel: c.channel, meta: c.meta, account: c.account, detail: c.detail });
+      push(c.channel ? `Connected as ${c.channel}` : "YouTube connected", { icon: "▶" });
     } catch (e) {
       pushErr("YouTube connect failed", errOf(e, 140));
     } finally {
@@ -144,7 +201,7 @@ export function SettingsView() {
       <PageHead title="Settings" sub={`Credentials and pricing for ${project.name}. The service-account key lives on the server and is never sent back.`} />
       <div className="grid xl:grid-cols-2 gap-4 items-start">
         {/* Two explicit stacks (not row-aligned cards) so short + tall cards
-            never leave dead gaps — left: Appearance + YouTube, right: Cloud. */}
+            never leave dead gaps — left: Appearance + YouTube app + account, right: Cloud. */}
         <div className="min-w-0 space-y-4">
         <SlateCard>
           <SlateCardHeader>
@@ -161,15 +218,110 @@ export function SettingsView() {
         </SlateCard>
         <SlateCard>
           <SlateCardHeader>
-            <h3 className="font-display font-bold text-[13.5px]">YouTube publishing</h3>
-            {connected ? <SlateBadge tone="ok"><MonitorPlay className="size-3" /> {yt.channel || "Connected"}</SlateBadge> : <SlateBadge tone="draft"><MonitorPlay className="size-3" /> Not connected</SlateBadge>}
+            <h3 className="font-display font-bold text-[13.5px]">YouTube OAuth app</h3>
+            {ytAppId ? <SlateBadge tone="ok"><KeyRound className="size-3" /> Saved</SlateBadge> : <SlateBadge tone="draft">Not set</SlateBadge>}
           </SlateCardHeader>
           <div className="p-4 space-y-4">
-            <div>
-              <SlateLabel>OAuth Client ID (YouTube Data API v3)</SlateLabel>
-              <SlateField className="font-mono !text-[12px]" value={ytId} onChange={(e) => setYtId(e.target.value)} placeholder="123…apps.googleusercontent.com" autoComplete="off" />
-              <p className="text-[11.5px] text-muted mt-1">Web-application client with the API enabled. Token stays in memory, never in storage.</p>
-            </div>
+            {ytAppId ? (
+              <>
+                <p className="text-[11.5px] font-mono break-words rounded-[8px] border slate-hair p-2" style={{ background: "var(--surface-2)" }}>
+                  {ytAppId}
+                </p>
+                <p className="text-[11.5px] text-muted leading-relaxed">
+                  Saved server-side with this project. Disconnect to enter a different one — this also signs the account out.
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="ghost" size="sm" disabled={ytAppBusy} onClick={clearYtApp}>
+                    Disconnect
+                  </SlateButton>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <SlateLabel>OAuth Client ID (YouTube Data API v3)</SlateLabel>
+                  <SlateField className="font-mono !text-[12px]" value={ytId} onChange={(e) => setYtId(e.target.value)} placeholder="123…apps.googleusercontent.com" autoComplete="off" />
+                  <p className="text-[11.5px] text-muted mt-1">Web-application client with the API enabled and this origin registered. The ID is public — only the session stays in this browser, never on the server.</p>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="primary" size="sm" disabled={ytAppBusy || !ytId.trim()} onClick={saveYtApp}>
+                    <Check className="size-3.5" /> Save
+                  </SlateButton>
+                </div>
+              </>
+            )}
+          </div>
+        </SlateCard>
+        <SlateCard>
+          <SlateCardHeader>
+            <h3 className="font-display font-bold text-[13.5px]">YouTube account</h3>
+            {connected
+              ? <SlateBadge tone="ok"><MonitorPlay className="size-3" /> {yt.channel || "Connected"}</SlateBadge>
+              : yt.channel
+                ? <SlateBadge tone="pending"><MonitorPlay className="size-3" /> Session expired</SlateBadge>
+                : <SlateBadge tone="draft"><MonitorPlay className="size-3" /> Not connected</SlateBadge>}
+          </SlateCardHeader>
+          <div className="p-4 space-y-4">
+            {yt.meta && (
+              <div className="rounded-[8px] border slate-hair p-2.5 flex items-center gap-2.5" style={{ background: "var(--surface-2)" }}>
+                {yt.meta.avatar ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={yt.meta.avatar} alt="" className="size-9 rounded-full shrink-0" loading="lazy" />
+                ) : (
+                  <span className="slate-tile-icon w-9 h-9 !rounded-full shrink-0">
+                    <MonitorPlay className="size-4" />
+                  </span>
+                )}
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-bold truncate">{yt.meta.name || yt.channel || "Connected"}</span>
+                  {ytSub && (
+                    <span className="block text-[11px] font-mono text-muted truncate">{ytSub}</span>
+                  )}
+                </span>
+              </div>
+            )}
+            {connected && yt.account === "no-channel" && (
+              <div className="rounded-[8px] border slate-hair p-2.5 text-[12px] leading-relaxed" style={{ background: "var(--t-danger-bg)", color: "var(--t-danger-fg)" }}>
+                <p className="font-bold">No YouTube channel on this Google account.</p>
+                <p className="mt-0.5">Uploads will fail until you create one — then Disconnect and connect again.</p>
+              </div>
+            )}
+            {connected && yt.account === "error" && (
+              <div className="rounded-[8px] border slate-hair p-2.5 text-[12px] leading-relaxed" style={{ background: "var(--surface-2)" }}>
+                <p className="font-bold">Signed in, but channel info couldn&apos;t be read{yt.detail ? ` (${yt.detail})` : ""}.</p>
+                <p className="mt-0.5 text-muted">{ytErrorHint(yt.detail)} — then reconnect.</p>
+                <div className="mt-2 flex gap-2">
+                  <SlateButton variant="ghost" size="sm" disabled={ytCheckBusy} onClick={retryYtCheck}>
+                    {ytCheckBusy ? "Checking…" : "Retry check"}
+                  </SlateButton>
+                </div>
+              </div>
+            )}
+            {connected ? (
+              <div className="flex gap-2 flex-wrap">
+                <SlateButton variant="ghost" size="sm" onClick={() => {
+                  // Revoke server-side too: memory-clear alone leaves the token live ~1h.
+                  ytRevokeAccess(useYtAuth.getState().token);
+                  useYtAuth.getState().clear();
+                  push("YouTube disconnected", { icon: "▶", tone: "info" });
+                }}>
+                  <LogOut className="size-3.5" /> Disconnect
+                </SlateButton>
+              </div>
+            ) : (
+              <>
+                <p className="text-[11.5px] text-muted leading-relaxed">
+                  {yt.channel
+                    ? `Signed in as ${yt.channel} before — reconnect to publish again. Needs the OAuth app above.`
+                    : "Connect your Google account to publish. Needs the OAuth app above first."}
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="ghost" size="sm" disabled={ytBusy || !ytAppId} onClick={ytGo}>
+                    <MonitorPlay className="size-3.5" /> {ytBusy ? "Connecting…" : yt.channel ? "Reconnect" : "Connect YouTube"}
+                  </SlateButton>
+                </div>
+              </>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <SlateLabel>Default privacy</SlateLabel>
@@ -197,16 +349,7 @@ export function SettingsView() {
               </div>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <SlateButton variant="primary" size="sm" onClick={saveYt}><Check className="size-3.5" /> Save</SlateButton>
-              {connected ? (
-                <SlateButton variant="ghost" size="sm" onClick={() => { useYtAuth.getState().clear(); push("YouTube disconnected", { icon: "▶", tone: "info" }); }}>
-                  <LogOut className="size-3.5" /> Disconnect
-                </SlateButton>
-              ) : (
-                <SlateButton variant="ghost" size="sm" disabled={ytBusy} onClick={ytGo}>
-                  <MonitorPlay className="size-3.5" /> {ytBusy ? "Connecting…" : "Connect YouTube"}
-                </SlateButton>
-              )}
+              <SlateButton variant="primary" size="sm" disabled={ytPrefsBusy} onClick={saveYtPrefs}><Check className="size-3.5" /> Save</SlateButton>
             </div>
             <p className="text-[11.5px] text-muted leading-relaxed">
               Unverified OAuth apps can only upload <span className="font-mono">private</span>. Pass Google&apos;s audit for public uploads. Uploads cost quota (~100/day on new projects).

@@ -291,9 +291,10 @@ function buildProjects(
         bucket: srvCfg?.bucket ?? "",
         useBucket: srvCfg?.useBucket ?? true,
         authMode: srvCfg?.authMode ?? "service_account",
-        ytClientId: yt?.ytClientId ?? "",
-        ytPrivacy: yt?.ytPrivacy ?? "unlisted",
-        ytCategory: yt?.ytCategory ?? "22",
+        // YouTube publish config: server truth once loaded, local cache before that.
+        ytClientId: srvCfg?.ytClientId ?? yt?.ytClientId ?? "",
+        ytPrivacy: srvCfg?.ytPrivacy ?? yt?.ytPrivacy ?? "unlisted",
+        ytCategory: srvCfg?.ytCategory ?? yt?.ytCategory ?? "22",
       },
     };
   });
@@ -896,14 +897,17 @@ export const useStudio = create<StudioState>()((set, get) => {
     saveSettings: async (patch) => {
       const id = get().activeId;
       if (!id) return;
-      // Server owns auth/bucket; the SA key itself is only ever sent up, never stored locally.
+      // Server owns auth/bucket/YouTube config; the SA key itself is only ever sent up, never stored locally.
       // Empty-string saJson is meaningful (clear the stored key) — only undefined means "don't touch".
       const { saJson, bucket, useBucket, authMode, ...ytPatch } = patch;
-      const serverPatch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env" } = {};
+      const serverPatch: { saJson?: string; bucket?: string; useBucket?: boolean; authMode?: "service_account" | "env"; ytClientId?: string; ytPrivacy?: string; ytCategory?: string } = {};
       if (typeof saJson === "string") serverPatch.saJson = saJson;
       if (bucket !== undefined) serverPatch.bucket = bucket;
       if (useBucket !== undefined) serverPatch.useBucket = useBucket;
       if (authMode !== undefined) serverPatch.authMode = authMode;
+      if (typeof ytPatch.ytClientId === "string") serverPatch.ytClientId = ytPatch.ytClientId;
+      if (typeof ytPatch.ytPrivacy === "string") serverPatch.ytPrivacy = ytPatch.ytPrivacy;
+      if (typeof ytPatch.ytCategory === "string") serverPatch.ytCategory = ytPatch.ytCategory;
       if (Object.keys(serverPatch).length > 0) {
         const saved = await api.saveSettings(id, serverPatch);
         const prev = get().srvSettings[id];
@@ -919,6 +923,9 @@ export const useStudio = create<StudioState>()((set, get) => {
               saEmail: saved.saEmail,
               saProjectId: saved.saProjectId,
               bucketLocation: saved.bucketCheck?.location ?? saved.bucketLocation ?? prev?.bucketLocation ?? null,
+              ytClientId: saved.ytClientId,
+              ytPrivacy: saved.ytPrivacy,
+              ytCategory: saved.ytCategory,
             },
           },
         });
