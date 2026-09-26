@@ -16,6 +16,7 @@ import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateMenuRow, SlateOption } from "@/components/slate/dropdown";
+import { SlateTooltip } from "@/components/slate/tooltip";
 import { PageHead } from "@/components/slate/core";
 import { ModeBadge, ModeIcon, StatusBadge } from "@/components/studio/shared";
 
@@ -26,24 +27,25 @@ function SlotBox({
 }) {
   return (
     <div className="relative w-[44px] h-[44px] shrink-0">
-      <button
-        type="button"
-        onClick={onPick}
-        title={emptyLabel}
-        aria-label={emptyLabel}
-        className="w-full h-full rounded-[10px] overflow-hidden border slate-hair grid place-items-center hover:border-[#3FA96D] bg-surface2 relative"
-        style={img ? undefined : { borderStyle: "dashed" }}
-      >
-        {img ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={img} className="absolute inset-0 w-full h-full object-cover" alt="" />
-        ) : (
-          <span className="flex flex-col items-center gap-0.5 text-muted">
-            {emptyIcon ?? <ImagePlus className="size-3.5" />}
-            <span className="text-[8.5px] font-bold leading-none whitespace-nowrap">{emptyLabel}</span>
-          </span>
-        )}
-      </button>
+      <SlateTooltip tip={emptyLabel}>
+        <button
+          type="button"
+          onClick={onPick}
+          aria-label={emptyLabel}
+          className="w-full h-full rounded-[10px] overflow-hidden border slate-hair grid place-items-center hover:border-[#3FA96D] bg-surface2 relative"
+          style={img ? undefined : { borderStyle: "dashed" }}
+        >
+          {img ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={img} className="absolute inset-0 w-full h-full object-cover" alt="" />
+          ) : (
+            <span className="flex flex-col items-center gap-0.5 text-muted">
+              {emptyIcon ?? <ImagePlus className="size-3.5" />}
+              <span className="text-[8.5px] font-bold leading-none whitespace-nowrap">{emptyLabel}</span>
+            </span>
+          )}
+        </button>
+      </SlateTooltip>
       {img && (
         <SlateIconButton
           size="icon-2xs"
@@ -241,14 +243,18 @@ export function GenerateView() {
                     {v.status === "pending" ? (
                       <>
                         <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
-                        <p className="text-[11.5px] font-mono text-muted mt-1.5" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-                          {money(v.cost)} est. · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
-                        </p>
+                        <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+                          <p className="text-[11.5px] font-mono text-muted mt-1.5">
+                            {money(v.cost)} est. · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
+                          </p>
+                        </SlateTooltip>
                       </>
                     ) : (
-                      <p className="text-[11.5px] font-mono text-muted mt-1.5" title={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-                        {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : v.status === "failed" ? (<><s>{money(v.cost)}</s> · {(v.error || "failed").slice(0, 90)}</>) : (v.error || "failed").slice(0, 90)}
-                      </p>
+                      <SlateTooltip tip={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+                        <p className="text-[11.5px] font-mono text-muted mt-1.5">
+                          {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : v.status === "failed" ? (<><s>{money(v.cost)}</s> · {(v.error || "failed").slice(0, 90)}</>) : (v.error || "failed").slice(0, 90)}
+                        </p>
+                      </SlateTooltip>
                     )}
                   </div>
                 </div>
@@ -416,26 +422,36 @@ export function GenerateView() {
                   ))}
                 </div>
               )}
-              <textarea
-                rows={2}
-                value={g.prompt}
-                ref={(el) => { taRef.current = el; fit(el); }}
-                onChange={(e) => {
-                  updateActive((draft) => { draft.gen.prompt = e.target.value; });
-                  fit(e.target);
-                  const pos = e.target.selectionStart || 0;
-                  const mt = e.target.value.slice(0, pos).match(/@([\w-]*)$/);
-                  setMention(mt ? { q: mt[1].toLowerCase(), start: pos - mt[0].length, pos } : null);
-                }}
-                placeholder={g.mode === "extend" ? "What happens next: action + camera + mood… (type @ to mention an element)" : "Describe the shot… (type @ to mention an element)"}
-                className="w-full bg-transparent outline-none resize-none text-[13.5px] leading-relaxed px-1 placeholder:text-muted"
-                style={{ overflowY: "hidden" }}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape" && mention) { e.preventDefault(); setMention(null); return; }
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
-                }}
-              />
-              <div className="flex gap-2 mt-2">
+              <div className="relative">
+                <textarea
+                  rows={2}
+                  value={g.prompt}
+                  maxLength={4000}
+                  ref={(el) => { taRef.current = el; fit(el); }}
+                  onChange={(e) => {
+                    updateActive((draft) => { draft.gen.prompt = e.target.value; });
+                    fit(e.target);
+                    const pos = e.target.selectionStart || 0;
+                    const mt = e.target.value.slice(0, pos).match(/@([\w-]*)$/);
+                    setMention(mt ? { q: mt[1].toLowerCase(), start: pos - mt[0].length, pos } : null);
+                  }}
+                  placeholder={g.mode === "extend" ? "What happens next: action + camera + mood… (type @ to mention an element)" : "Describe the shot… (type @ to mention an element)"}
+                  className="w-full bg-transparent outline-none resize-none text-[13.5px] leading-relaxed px-1 placeholder:text-muted"
+                  style={{ overflowY: "hidden" }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && mention) { e.preventDefault(); setMention(null); return; }
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+                  }}
+                />
+                <SlateBadge
+                  tone={g.prompt.length > 3600 ? "pending" : "draft"}
+                  className="absolute bottom-1 right-3 tabular-nums transition-opacity hover:opacity-0"
+                  tip="Prompt limit: 4000 characters"
+                >
+                  {(Math.round(g.prompt.length / 100) / 10).toString()}/4k
+                </SlateBadge>
+              </div>
+              <div className="flex gap-2 mt-2 items-center">
                 <SlateIconButton
                   size="icon"
                   variant={g.enhance ? "primary" : "ghost"}

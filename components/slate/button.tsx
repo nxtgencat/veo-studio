@@ -4,6 +4,7 @@ import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "cn";
 import { X } from "lucide-react";
+import { SlateTooltip } from "@/components/slate/tooltip";
 
 const buttonVariants = cva(
   "slate-btn inline-flex items-center justify-center gap-[7px] h-[38px] px-[14px] rounded-[9px] text-[13.5px] font-semibold whitespace-nowrap border border-transparent transition-colors select-none active:translate-y-px disabled:opacity-45 disabled:pointer-events-none [&_svg]:size-[15px] [&_svg]:shrink-0",
@@ -30,18 +31,25 @@ const buttonVariants = cva(
 
 export interface SlateButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {}
+    VariantProps<typeof buttonVariants> {
+  /** Themed tooltip (never a native title) — wraps the button, zero layout impact. */
+  tip?: React.ReactNode;
+}
 
 export const SlateButton = React.forwardRef<HTMLButtonElement, SlateButtonProps>(
-  ({ className, variant, size, type, ...props }, ref) => (
-    <button ref={ref} type={(type as "button" | "submit") ?? "button"} className={cn(buttonVariants({ variant, size }), className)} {...props} />
-  ),
+  ({ className, variant, size, type, tip, ...props }, ref) => {
+    const btn = (
+      <button ref={ref} type={(type as "button" | "submit") ?? "button"} className={cn(buttonVariants({ variant, size }), className)} {...props} />
+    );
+    return tip ? <SlateTooltip tip={tip}>{btn}</SlateTooltip> : btn;
+  },
 );
 SlateButton.displayName = "SlateButton";
 
 /**
  * Square icon-only button — one consistent primitive for every icon action
  * (composer enhance/audio/advanced, dialog close, refresh, row menus).
+ * The label doubles as a themed tooltip (never a native title).
  * Shadcn parity: button.tsx `icon` / `icon-sm` sizes, ghost hover, active press.
  */
 export const SlateIconButton = React.forwardRef<
@@ -52,9 +60,11 @@ export const SlateIconButton = React.forwardRef<
     children: React.ReactNode;
   }
 >(({ className, variant = "ghost", size = "icon-sm", label, children, ...props }, ref) => (
-  <SlateButton ref={ref} variant={variant} size={size} aria-label={label} title={label} className={className} {...props}>
-    {children}
-  </SlateButton>
+  <SlateTooltip tip={label}>
+    <SlateButton ref={ref} variant={variant} size={size} aria-label={label} className={className} {...props}>
+      {children}
+    </SlateButton>
+  </SlateTooltip>
 ));
 SlateIconButton.displayName = "SlateIconButton";
 

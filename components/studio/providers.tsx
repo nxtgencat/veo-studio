@@ -6,6 +6,7 @@ import { Clapperboard, Eye, EyeOff, KeyRound, Loader2, Moon, Sun } from "lucide-
 import { ThemeProvider } from "@/components/theme-provider";
 import { useHydrateStudio, useRenderTick } from "@/hooks/use-studio-hooks";
 import { useStudio } from "@/stores/use-studio";
+import { useToasts } from "@/stores/use-ui";
 import { SlateToastProvider } from "@/components/slate/toasts";
 import { SlateSidebarProvider } from "@/components/slate/sidebar";
 import { SlateButton } from "@/components/slate/button";
@@ -25,6 +26,7 @@ function StudioEffects() {
 function AuthGate() {
   const authRequired = useStudio((s) => s.authRequired);
   const login = useStudio((s) => s.login);
+  const push = useToasts((s) => s.push);
   const { resolvedTheme, setTheme } = useTheme();
   const dark = resolvedTheme === "dark";
   const [pw, setPw] = useState("");
@@ -41,6 +43,7 @@ function AuthGate() {
       setBusy(false);
       if (r.ok) {
         setPw("");
+        push("Studio unlocked", { icon: "✓" });
       } else {
         setError("Wrong password — try again.");
       }

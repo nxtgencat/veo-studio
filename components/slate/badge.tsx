@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "cn";
+import { SlateTooltip } from "@/components/slate/tooltip";
 
 const badgeVariants = cva(
   "slate-badge inline-flex items-center gap-[5px] h-[22px] px-2 rounded-full text-[11.5px] font-bold whitespace-nowrap [&_svg]:size-3 [&_svg]:shrink-0",
@@ -21,9 +22,13 @@ const badgeVariants = cva(
 
 export interface SlateBadgeProps
   extends React.HTMLAttributes<HTMLSpanElement>,
-    VariantProps<typeof badgeVariants> {}
+    VariantProps<typeof badgeVariants> {
+  /** Themed tooltip (never a native title). */
+  tip?: React.ReactNode;
+}
 
-export function SlateBadge({ className, tone, ...props }: SlateBadgeProps) {
-  return <span className={cn(badgeVariants({ tone }), "tabular-nums", className)} {...props} />;
+export function SlateBadge({ className, tone, tip, ...props }: SlateBadgeProps) {
+  const badge = <span className={cn(badgeVariants({ tone }), "tabular-nums", className)} {...props} />;
+  return tip ? <SlateTooltip tip={tip}>{badge}</SlateTooltip> : badge;
 }
 export { badgeVariants };

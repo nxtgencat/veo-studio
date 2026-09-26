@@ -12,6 +12,7 @@ import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
+import { SlateTooltip } from "@/components/slate/tooltip";
 import { SlateButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { PageHead, SlateEmpty, SlateProgress, SlateSegmented } from "@/components/slate/core";
@@ -206,9 +207,11 @@ export function LibraryView() {
                 {v.status === "pending" && (
                   <div className="absolute inset-0 bg-black/45 p-2.5 sm:p-4 flex flex-col justify-end gap-1.5">
                     <SlateProgress value={v.progress || 5} />
-                    <p className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-                      {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)}
-                    </p>
+                    <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+                      <p className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums">
+                        {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)}
+                      </p>
+                    </SlateTooltip>
                   </div>
                 )}
                 <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 hidden min-[420px]:inline-flex">
@@ -218,7 +221,7 @@ export function LibraryView() {
                   {fmtDurPair(expectedDur(v, (id) => project.library.find((x) => x.id === id)), v.durActual)} · {v.res}
                 </SlateBadge>
                 {v.status !== "pending" && (
-                  <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" title={fullTs(v.createdAt)}>
+                  <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" tip={fullTs(v.createdAt)}>
                     <Clock className="size-3" /> {ago(v.createdAt)}
                   </SlateBadge>
                 )}
@@ -229,9 +232,11 @@ export function LibraryView() {
                 </p>
                 <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
                   <StatusBadge status={v.status} />
-                  <span className="text-[11px] sm:text-[12px] font-mono text-fg2" title={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-                    {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
-                  </span>
+                  <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+                    <span className="text-[11px] sm:text-[12px] font-mono text-fg2">
+                      {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
+                    </span>
+                  </SlateTooltip>
                 </div>
               </div>
             </Link>

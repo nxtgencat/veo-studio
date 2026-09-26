@@ -10,6 +10,7 @@ import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel } from "@/components/slate/core";
 import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { SlateTooltip } from "@/components/slate/tooltip";
 import { pendingOf } from "@/lib/pricing";
 
 export function ProjectList({ compact }: { compact?: boolean }) {
@@ -41,11 +42,12 @@ export function ProjectList({ compact }: { compact?: boolean }) {
               i > 0 ? "border-t slate-hair" : ""
             } ${q.id === activeId ? "bg-[var(--t-brand-bg)]" : "hover:bg-surface2"}`}
           >
-            <span
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${pendingOf(q) > 0 ? "animate-pulse" : ""}`}
-              style={{ background: pendingOf(q) > 0 ? "#B8790E" : "var(--muted)" }}
-              title={pendingOf(q) > 0 ? `${pendingOf(q)} running` : q.name}
-            />
+            <SlateTooltip tip={pendingOf(q) > 0 ? `${pendingOf(q)} running` : q.name}>
+              <span
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${pendingOf(q) > 0 ? "animate-pulse" : ""}`}
+                style={{ background: pendingOf(q) > 0 ? "#B8790E" : "var(--muted)" }}
+              />
+            </SlateTooltip>
             <span className="flex-1 min-w-0 truncate text-[13px] font-semibold leading-tight">{q.name}</span>
             <SlateDropdown
               trigger={

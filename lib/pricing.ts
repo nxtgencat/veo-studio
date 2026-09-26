@@ -104,6 +104,7 @@ export function validateGen(
   lib: VideoItem[],
 ): string | null {
   if (!g.prompt.trim()) return "Write a prompt first.";
+  if (g.prompt.trim().length > 4000) return "Prompt is over 4000 characters — shorten it.";
   // Slots are mutually exclusive — flag stale inputs carried over from another mode,
   // naming exactly what's in the way so the fix is obvious.
   const hasImage = !!g.image;

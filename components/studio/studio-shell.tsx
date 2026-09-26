@@ -9,6 +9,7 @@ import { modelOf, pendingOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { SlateBadge } from "@/components/slate/badge";
+import { SlateTooltip } from "@/components/slate/tooltip";
 import { SlateIconButton } from "@/components/slate/button";
 import { SlateSidebar, SlateSidebarDrawer, SlateSidebarTrigger } from "@/components/slate/sidebar";
 import { ProjectList } from "@/components/studio/project-list";
@@ -67,8 +68,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           <SlateIconButton
             variant="quiet"
             size="icon-xs"
-            label="Lock studio"
-            title="Lock studio (forget password on this browser)"
+            label="Lock studio (forget password on this browser)"
             onClick={() => {
               logout();
               push("Locked", { icon: "✓", tone: "info" });
@@ -76,18 +76,19 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           >
             <Lock className="size-3.5" />
           </SlateIconButton>
-          <SlateBadge tone="brand" title="Spent in this project">
+          <SlateBadge tone="brand" tip="Spent in this project">
             <Wallet className="size-3" /> {money(spendOf(active))}
           </SlateBadge>
           {totalPending > 0 && firstRunning && (
             <Link
               href={`/p/${firstRunning.id}/library?status=pending`}
               className="no-underline"
-              title="Active renders — jump to project"
             >
-              <SlateBadge tone="pending">
-                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> {totalPending} running
-              </SlateBadge>
+              <SlateTooltip tip="Active renders — jump to project">
+                <SlateBadge tone="pending">
+                  <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> {totalPending} running
+                </SlateBadge>
+              </SlateTooltip>
             </Link>
           )}
         </span>

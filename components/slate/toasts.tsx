@@ -26,6 +26,11 @@ function ToastGlyph({ icon, tone }: { icon?: string; tone: ToastTone }) {
     case "plus":
       return <Plus className="size-4" aria-hidden="true" />;
     case "trash":
+    case "🗑":
+      return <Trash2 className="size-4" aria-hidden="true" />;
+    case "…":
+      return <Loader2 className="size-4 animate-spin" aria-hidden="true" />;
+    case "trash":
       return <Trash2 className="size-4" aria-hidden="true" />;
     case "!":
       return <TriangleAlert className="size-4" aria-hidden="true" />;
@@ -52,7 +57,7 @@ export function SlateToastProvider({ children }: { children: React.ReactNode }) 
     <ToastPrimitive.Provider toastManager={slateToastManager} limit={4} timeout={4200}>
       {children}
       <ToastPrimitive.Portal>
-        <ToastPrimitive.Viewport className="pointer-events-none fixed z-[80] bottom-20 lg:bottom-5 inset-x-3 sm:left-auto sm:right-5 sm:w-[340px] outline-none">
+        <ToastPrimitive.Viewport className="pointer-events-none fixed z-[100] bottom-20 lg:bottom-5 inset-x-3 sm:left-auto sm:right-5 sm:w-[340px] outline-none">
           <SlateToastList />
         </ToastPrimitive.Viewport>
       </ToastPrimitive.Portal>

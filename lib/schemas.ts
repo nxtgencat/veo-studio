@@ -18,7 +18,7 @@ export const genDraftSchema = z.object({
   person: z.enum(["allow_adult", "dont_allow"]),
   enhance: z.boolean(),
   negativePrompt: z.string().max(2000).default(""),
-  prompt: z.string().max(5000),
+  prompt: z.string().max(4000),
   image: z.string().max(2000000),
   first: z.string().max(2000000),
   last: z.string().max(2000000),

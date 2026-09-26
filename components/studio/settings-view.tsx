@@ -35,8 +35,7 @@ export function SettingsView() {
   const dark = resolvedTheme === "dark";
   const yt = useYtAuth();
   const [sa, setSa] = useState("");
-  const [bucket, setBucket] = useState(project?.settings.bucket ?? "");
-  const [useBucket, setUseBucket] = useState(project?.settings.useBucket ?? true);
+  const [bucket, setBucket] = useState("");
   const [authMode, setAuthMode] = useState<"service_account" | "env">(project?.settings.authMode ?? "service_account");
   const [ytId, setYtId] = useState(project?.settings.ytClientId ?? "");
   const [ytPriv, setYtPriv] = useState(project?.settings.ytPrivacy ?? "unlisted");
@@ -44,14 +43,22 @@ export function SettingsView() {
   const [ytBusy, setYtBusy] = useState(false);
   const [saBusy, setSaBusy] = useState(false);
   const [bktBusy, setBktBusy] = useState(false);
+  const [togBusy, setTogBusy] = useState(false);
 
-  // Resync local editors when the server state arrives/changes.
+  // Connection truth lives server-side; inputs are connect-only (a connected
+  // entry must be disconnected before a new one can be entered).
+  const saConnected = !!serverSettings?.hasSaJson && (project?.settings.authMode ?? "service_account") === "service_account";
+  const bucketId = project?.settings.bucket ?? "";
+  const bucketOn = project?.settings.useBucket ?? false;
+  const saReady = (project?.settings.authMode ?? "service_account") === "env" || !!serverSettings?.hasSaJson;
+
+  // Reset connect forms when switching projects.
   useEffect(() => {
-    if (!project) return;
-    setBucket(project.settings.bucket ?? "");
-    setUseBucket(project.settings.useBucket ?? true);
-    setAuthMode(project.settings.authMode ?? "service_account");
-  }, [project?.settings.bucket, project?.settings.useBucket, project?.settings.authMode]);
+    setSa("");
+    setBucket("");
+    setAuthMode(project?.settings.authMode ?? "service_account");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
 
   if (!project) return null;
   const connected = !!yt.token && yt.exp > Date.now();
@@ -61,7 +68,7 @@ export function SettingsView() {
     setSaBusy(true);
     void saveSettings({ saJson: sa, authMode }).then(
       () => {
-        push("Service account saved & verified", { icon: "✓", detail: sa.trim() ? "Key exchanged for a token successfully" : "Auth method updated" });
+        push("Service account connected", { icon: "✓", detail: sa.trim() ? "Key exchanged for a token successfully" : "Auth method updated" });
         setSa("");
       },
       (e) => {
@@ -69,25 +76,39 @@ export function SettingsView() {
       },
     ).finally(() => setSaBusy(false));
   };
+  // Connect a new bucket: always lands Off — the toggle turns it on.
   const saveBucket = () => {
-    if (bktBusy) return;
+    const id = bucket.trim();
+    if (bktBusy || !id) return;
     setBktBusy(true);
-    // Empty ID forces the toggle off: "on but empty" can't be saved.
-    const bucketValue = bucket.trim();
-    const useValue = bucketValue ? useBucket : false;
-    void saveSettings({ bucket: bucketValue, useBucket: useValue }).then(
+    void saveSettings({ bucket: id, useBucket: false }).then(
       () => {
         const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
-        push(
-          bucketValue ? "Bucket verified & saved" : "Bucket cleared",
-          { icon: "✓", detail: loc ? `Reachable · ${loc}` : bucketValue ? `Saved · use ${useValue ? "on" : "off"}` : undefined },
-        );
+        setBucket("");
+        push("Bucket connected · Off", { icon: "✓", detail: loc ? `Reachable · ${loc}` : "Verified — flip the toggle to use it" });
       },
       (e) => {
-        // Revert the draft toggle to saved truth — a failed save changes nothing.
-        setUseBucket(project?.settings.useBucket ?? true);
-        push("Bucket save failed — kept previous value", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e) });
+        push("Bucket save failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) });
       },
+    ).finally(() => setBktBusy(false));
+  };
+  // Toggle only exists on a connected bucket. Turning on re-verifies against
+  // current credentials; turning off needs no verification.
+  const flipBucket = () => {
+    if (togBusy || !bucketId) return;
+    setTogBusy(true);
+    const patch = bucketOn ? { useBucket: false } : { bucket: bucketId, useBucket: true };
+    void saveSettings(patch).then(
+      () => push(bucketOn ? "Bucket off" : `Bucket on — outputs save to gs://${bucketId}`, { icon: "✓", tone: bucketOn ? "info" : "ok" }),
+      (e) => push("Bucket toggle failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 160) }),
+    ).finally(() => setTogBusy(false));
+  };
+  const dropBucket = () => {
+    if (bktBusy || !bucketId) return;
+    setBktBusy(true);
+    void saveSettings({ bucket: "", useBucket: false }).then(
+      () => push("Bucket disconnected", { icon: "✓", tone: "info" }),
+      (e) => push("Disconnect failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
     ).finally(() => setBktBusy(false));
   };
   const saveYt = () => {
@@ -199,102 +220,128 @@ export function SettingsView() {
         <SlateCard>
           <SlateCardHeader>
             <h3 className="font-display font-bold text-[13.5px]">Service account</h3>
-            {authMode === "env" ? (
+            {project.settings.authMode === "env" ? (
               <SlateBadge tone="info">Environment</SlateBadge>
-            ) : serverSettings?.hasSaJson ? (
-              <SlateBadge tone="ok"><KeyRound className="size-3" /> SA connected</SlateBadge>
+            ) : saConnected ? (
+              <SlateBadge tone="ok"><KeyRound className="size-3" /> Connected</SlateBadge>
             ) : (
-              <SlateBadge tone="danger">No service account</SlateBadge>
+              <SlateBadge tone="draft">Not connected</SlateBadge>
             )}
           </SlateCardHeader>
           <div className="p-4 space-y-4">
-            {serverSettings?.hasSaJson && (
-              <p className="text-[11.5px] font-mono break-words rounded-[8px] border slate-hair p-2" style={{ background: "var(--surface-2)" }}>
-                {serverSettings.saEmail ?? "service account"} · {serverSettings.saProjectId ?? ""}
-              </p>
-            )}
-            <div>
-              <SlateLabel>Auth method</SlateLabel>
-              <SlateDropdown
-                label={authMode === "env" ? "Environment variables" : "Service account JSON (default)"}
-                btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
-                menu={(close) => (
-                  <>
-                    <SlateOption active={authMode === "service_account"} sub="Paste a key below" onPick={() => setAuthMode("service_account")} onClose={close}>
-                      Service account JSON (default)
-                    </SlateOption>
-                    <SlateOption active={authMode === "env"} sub="GOOGLE_CLOUD_PROJECT + VERTEX_ACCESS_TOKEN" onPick={() => setAuthMode("env")} onClose={close}>
-                      Environment variables
-                    </SlateOption>
-                  </>
+            {saConnected ? (
+              <>
+                <p className="text-[11.5px] font-mono break-words rounded-[8px] border slate-hair p-2" style={{ background: "var(--surface-2)" }}>
+                  {serverSettings?.saEmail ?? "service account"} · {serverSettings?.saProjectId ?? ""}
+                </p>
+                <p className="text-[11.5px] text-muted leading-relaxed">
+                  Key verified and stored server-side (never sent back). Disconnect to enter a different key.
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton
+                    variant="ghost"
+                    size="sm"
+                    disabled={saBusy}
+                    onClick={() => {
+                      if (saBusy) return;
+                      setSaBusy(true);
+                      void saveSettings({ saJson: "" }).then(
+                        () => push("Service account disconnected", { icon: "✓", tone: "info" }),
+                        (e) => push("Disconnect failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
+                      ).finally(() => setSaBusy(false));
+                    }}
+                  >
+                    Disconnect
+                  </SlateButton>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <SlateLabel>Auth method</SlateLabel>
+                  <SlateDropdown
+                    label={authMode === "env" ? "Environment variables" : "Service account JSON (default)"}
+                    btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
+                    menu={(close) => (
+                      <>
+                        <SlateOption active={authMode === "service_account"} sub="Paste a key below" onPick={() => setAuthMode("service_account")} onClose={close}>
+                          Service account JSON (default)
+                        </SlateOption>
+                        <SlateOption active={authMode === "env"} sub="GOOGLE_CLOUD_PROJECT + VERTEX_ACCESS_TOKEN" onPick={() => setAuthMode("env")} onClose={close}>
+                          Environment variables
+                        </SlateOption>
+                      </>
+                    )}
+                  />
+                </div>
+                {authMode === "service_account" && (
+                  <div>
+                    <SlateLabel>Service account JSON</SlateLabel>
+                    <SlateTextarea className="font-mono !text-[11.5px]" rows={5} value={sa} onChange={(e) => setSa(e.target.value)} placeholder='{"type":"service_account","project_id":"…"}' />
+                    <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span>. The key is verified (token exchange) before saving, stored server-side, never sent back.</p>
+                  </div>
                 )}
-              />
-            </div>
-            {authMode === "service_account" && (
-              <div>
-                <SlateLabel>Service account JSON {serverSettings?.hasSaJson ? <span className="text-muted font-normal">(blank = keep current)</span> : null}</SlateLabel>
-                <SlateTextarea className="font-mono !text-[11.5px]" rows={5} value={sa} onChange={(e) => setSa(e.target.value)} placeholder='{"type":"service_account","project_id":"…"}' />
-                <p className="text-[11.5px] text-muted mt-1">Needs <span className="font-mono">Vertex AI User</span> + <span className="font-mono">Service Usage Consumer</span>. The key is verified (token exchange) before saving, stored server-side, never sent back.</p>
-              </div>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="primary" size="sm" disabled={saBusy || (authMode === "service_account" && !sa.trim())} onClick={saveSa}><Check className="size-3.5" /> {saBusy ? "Verifying…" : "Save & verify"}</SlateButton>
+                </div>
+              </>
             )}
-            <div className="flex gap-2 flex-wrap">
-              <SlateButton variant="primary" size="sm" disabled={saBusy} onClick={saveSa}><Check className="size-3.5" /> {saBusy ? "Verifying…" : "Save & verify"}</SlateButton>
-              {serverSettings?.hasSaJson && (
-                <SlateButton
-                  variant="ghost"
-                  size="sm"
-                  disabled={saBusy}
-                  onClick={() => {
-                    if (saBusy) return;
-                    setSaBusy(true);
-                    void saveSettings({ saJson: "" }).then(
-                      () => push("Service account removed", { icon: "✓", tone: "info" }),
-                      (e) => push("Remove failed", { icon: "!", tone: "danger", detail: String(e instanceof Error ? e.message : e).slice(0, 140) }),
-                    ).finally(() => setSaBusy(false));
-                  }}
-                >
-                  Disconnect
-                </SlateButton>
-              )}
-            </div>
           </div>
         </SlateCard>
         <SlateCard>
           <SlateCardHeader>
             <h3 className="font-display font-bold text-[13.5px]">Storage bucket</h3>
-            {project.settings.useBucket && project.settings.bucket ? (
-              <SlateBadge tone="ok">In use{serverSettings?.bucketLocation ? ` · ${serverSettings.bucketLocation}` : ""}</SlateBadge>
+            {bucketId ? (
+              bucketOn
+                ? <SlateBadge tone="ok">Connected · On{serverSettings?.bucketLocation ? ` · ${serverSettings.bucketLocation}` : ""}</SlateBadge>
+                : <SlateBadge tone="draft">Connected · Off</SlateBadge>
             ) : (
-              <SlateBadge tone="draft">Off</SlateBadge>
+              <SlateBadge tone="draft">Not connected</SlateBadge>
             )}
           </SlateCardHeader>
           <div className="p-4 space-y-4">
-            <div>
-              <SlateLabel>Bucket ID</SlateLabel>
-              <SlateField className="font-mono !text-[12.5px]" value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="my-veo-output-12345" />
-              <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Saved only if it exists and the service account can reach it. Vertex writes outputs here; Extend chains from bucket videos.</p>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[13px] font-bold">Use bucket</p>
-                <p className="text-[11.5px] text-muted mt-0.5">
-                  {!bucket.trim()
-                    ? "Set a bucket ID above first."
-                    : useBucket
-                      ? "On = outputs are saved to the bucket and generated videos stay extendable."
-                      : "Off = outputs return inline (not saved); only fresh uploads under 20 MB can extend."}
+            {!saReady ? (
+              <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>
+                A service account must be connected first — bucket verification needs its credentials.
+              </p>
+            ) : !bucketId ? (
+              <>
+                <div>
+                  <SlateLabel>Bucket ID</SlateLabel>
+                  <SlateField className="font-mono !text-[12.5px]" value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="my-veo-output-12345" />
+                  <p className="text-[11.5px] text-muted mt-1">Created in <span className="font-mono">us-central1</span>. Saved only if it exists and the service account can reach it. Vertex writes outputs here; Extend chains from bucket videos.</p>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="primary" size="sm" disabled={bktBusy || !bucket.trim()} onClick={saveBucket}><Check className="size-3.5" /> {bktBusy ? "Verifying…" : "Save & verify"}</SlateButton>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-[11.5px] font-mono break-words rounded-[8px] border slate-hair p-2" style={{ background: "var(--surface-2)" }}>
+                  gs://{bucketId}
                 </p>
-              </div>
-              <SlateToggle
-                on={useBucket && !!bucket.trim()}
-                label="Toggle bucket use"
-                disabled={!bucket.trim()}
-                onFlip={() => setUseBucket((v) => !v)}
-              />
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              <SlateButton variant="primary" size="sm" disabled={bktBusy} onClick={saveBucket}><Check className="size-3.5" /> {bktBusy ? "Verifying…" : "Save & verify"}</SlateButton>
-            </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[13px] font-bold">Use bucket</p>
+                    <p className="text-[11.5px] text-muted mt-0.5">
+                      {bucketOn
+                        ? "On = outputs are saved to the bucket and generated videos stay extendable."
+                        : "Off = outputs return inline (not saved); only fresh uploads under 20 MB can extend."}
+                    </p>
+                  </div>
+                  <SlateToggle
+                    on={bucketOn}
+                    label="Toggle bucket use"
+                    disabled={togBusy}
+                    onFlip={flipBucket}
+                  />
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <SlateButton variant="ghost" size="sm" disabled={bktBusy} onClick={dropBucket}>Disconnect</SlateButton>
+                </div>
+                <p className="text-[11.5px] text-muted leading-relaxed">Disconnect to enter a different bucket ID.</p>
+              </>
+            )}
           </div>
         </SlateCard>
         </div>

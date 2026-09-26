@@ -4,6 +4,7 @@ import * as React from "react";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { cn } from "cn";
 import { Check, ChevronDown } from "lucide-react";
+import { SlateTooltip } from "@/components/slate/tooltip";
 
 /**
  * Single reusable dropdown — slate theme over the same primitive shadcn wraps
@@ -30,28 +31,32 @@ export function SlateDropdown({
   const [open, setOpen] = React.useState(false);
   const close = React.useCallback(() => setOpen(false), []);
 
+  // Themed tooltip composes with the menu trigger (no wrapper DOM, no
+  // native title) — every dropdown's `title` renders in-theme, app-wide.
+  const triggerEl = trigger ? (
+    <MenuPrimitive.Trigger render={trigger} />
+  ) : (
+    <MenuPrimitive.Trigger
+      render={
+        <button
+          type="button"
+          aria-label={typeof label === "string" ? label : title}
+          aria-haspopup="listbox"
+          className={cn(
+            "slate-field !min-h-[30px] !h-[30px] !w-auto !py-0 !pl-2 !pr-1 !text-[12px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0",
+            btnClassName,
+          )}
+        />
+      }
+    >
+      <span className="flex-1 min-w-0 truncate text-left">{label}</span>
+      <ChevronDown className="size-3.5 text-muted shrink-0" />
+    </MenuPrimitive.Trigger>
+  );
+
   return (
     <MenuPrimitive.Root open={open} onOpenChange={setOpen}>
-      {trigger ? (
-        <MenuPrimitive.Trigger render={trigger} />
-      ) : (
-        <MenuPrimitive.Trigger
-          render={
-            <button
-              type="button"
-              title={title}
-              aria-haspopup="listbox"
-              className={cn(
-                "slate-field !min-h-[30px] !h-[30px] !w-auto !py-0 !pl-2 !pr-1 !text-[12px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0",
-                btnClassName,
-              )}
-            />
-          }
-        >
-          <span className="flex-1 min-w-0 truncate text-left">{label}</span>
-          <ChevronDown className="size-3.5 text-muted shrink-0" />
-        </MenuPrimitive.Trigger>
-      )}
+      <SlateTooltip tip={title}>{triggerEl}</SlateTooltip>
       <MenuPrimitive.Portal>
         <MenuPrimitive.Positioner
           align={align}

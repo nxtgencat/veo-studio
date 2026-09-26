@@ -13,6 +13,7 @@ import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDialog } from "@/components/slate/overlays";
 import { PageHead, SlateEmpty, SlateField, SlateLabel, SlateSegmented } from "@/components/slate/core";
 import { SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { SlateTooltip } from "@/components/slate/tooltip";
 
 export function ElementsView() {
   const params = useParams<{ projectId: string }>();
@@ -75,16 +76,17 @@ export function ElementsView() {
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
           {items.map((e) => (
             <article key={e.id} className="slate-card overflow-hidden">
-              <button
-                type="button"
-                onClick={() => set({ view: e.id })}
-                title={`View ${e.name}`}
-                aria-label={`View ${e.name}`}
-                className="block w-full aspect-[4/3] bg-surface2 relative cursor-zoom-in"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={e.img} className="absolute inset-0 w-full h-full object-cover" alt={e.name} loading="lazy" />
-              </button>
+              <SlateTooltip tip={`View ${e.name}`}>
+                <button
+                  type="button"
+                  onClick={() => set({ view: e.id })}
+                  aria-label={`View ${e.name}`}
+                  className="block w-full aspect-[4/3] bg-surface2 relative cursor-zoom-in"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={e.img} className="absolute inset-0 w-full h-full object-cover" alt={e.name} loading="lazy" />
+                </button>
+              </SlateTooltip>
               <div className="p-3">
                 <p className="text-[13px] font-bold truncate">{e.name}</p>
                 {e.note && <p className="text-[11.5px] text-muted truncate mt-0.5">{e.note}</p>}

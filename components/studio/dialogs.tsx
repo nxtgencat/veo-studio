@@ -21,6 +21,7 @@ import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel, SlateProgress, SlateSearchField, SlateTextarea, SlateUploadCard } from "@/components/slate/core";
 import { SlateDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
+import { SlateTooltip } from "@/components/slate/tooltip";
 import { ModeBadge, StatusBadge } from "@/components/studio/shared";
 
 /**
@@ -414,9 +415,11 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       }
       footer={
         <div className="flex flex-wrap items-center gap-2 w-full">
-          <span className="font-display font-bold text-[17px] tabular-nums mr-auto" title={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-            {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
-          </span>
+          <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+            <span className="font-display font-bold text-[17px] tabular-nums mr-auto">
+              {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
+            </span>
+          </SlateTooltip>
           <div className="flex flex-wrap items-center justify-end gap-2 max-w-full">
           {v.status === "success" && (
             <>
@@ -438,7 +441,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
                   </>
                 )}
               />
-              <SlateButton variant="ghost" size="sm" onClick={() => set({ youtube: v.id })} title="Publish to YouTube">
+              <SlateButton variant="ghost" size="sm" onClick={() => set({ youtube: v.id })} tip="Publish to YouTube">
                 <MonitorPlay className="size-3.5" /> {v.youtube?.videoId ? "YouTube ✓" : "YouTube"}
               </SlateButton>
               <SlateButton variant="ghost" size="sm" onClick={extend}>
@@ -447,20 +450,20 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
             </>
           )}
           {v.status !== "pending" && (
-            <SlateButton variant="ghost" size="sm" onClick={reload} title="Load this exact config back into the composer (no submit)">
+            <SlateButton variant="ghost" size="sm" onClick={reload} tip="Load this exact config back into the composer (no submit)">
               <RotateCcw className="size-3.5" /> Reload
             </SlateButton>
           )}
           {v.status === "pending" ? (
-            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Stop polling and cancel this render (no output = no charge)">
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} tip="Stop polling and cancel this render (no output = no charge)">
               <CircleX className="size-3.5" /> Cancel
             </SlateButton>
           ) : v.status === "failed" ? (
-            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Dismiss this failed record (nothing was billed)">
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} tip="Dismiss this failed record (nothing was billed)">
               <Trash2 className="size-3.5" /> Dismiss
             </SlateButton>
           ) : (
-            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Delete this video">
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} tip="Delete this video">
               <Trash2 className="size-3.5" /> Delete
             </SlateButton>
           )}
@@ -481,9 +484,11 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       ) : v.status === "pending" ? (
         <div className="rounded-[10px] border slate-hair p-5 text-center">
           <SlateProgress value={v.progress || 5} />
-          <p className="text-[12.5px] font-bold tabular-nums mt-2" title={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
-            {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
-          </p>
+          <SlateTooltip tip={v.etaSource === "measured" ? "Based on your past renders" : "Typical time for this tier"}>
+            <p className="text-[12.5px] font-bold tabular-nums mt-2">
+              {v.progress || 5}% · {fmtCountdown(v.etaMs, v.elapsedMs)} · {fmtElapsed(v.elapsedMs ?? 0)} elapsed
+            </p>
+          </SlateTooltip>
         </div>
       ) : (
         <div className="rounded-[10px] border slate-hair p-4 text-[12.5px] leading-relaxed" style={{ background: "var(--t-danger-bg)", color: "var(--t-danger-fg)" }}>
@@ -492,7 +497,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         </div>
       )}
       <p className="mt-1">
-        <SlateBadge tone="draft" className="!h-[20px] !text-[10.5px] tabular-nums" title={fullTs(v.createdAt)}>
+        <SlateBadge tone="draft" className="!h-[20px] !text-[10.5px] tabular-nums">
           <Calendar className="size-3" /> {ago(v.createdAt)} · {fullTs(v.createdAt)}
         </SlateBadge>
       </p>
@@ -500,7 +505,9 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         {cfg.map((c) => (
           <div key={c[0]} className="rounded-[8px] border slate-hair px-2 py-1.5 min-w-0" style={{ background: "var(--surface-2)" }}>
             <p className="text-[9.5px] uppercase tracking-[.05em] text-muted font-bold leading-none">{c[0]}</p>
-            <p className="text-[12px] font-semibold mt-1 truncate leading-tight" title={c[1]}>{c[1]}</p>
+            <SlateTooltip tip={c[1]}>
+              <p className="text-[12px] font-semibold mt-1 truncate leading-tight">{c[1]}</p>
+            </SlateTooltip>
           </div>
         ))}
       </div>
@@ -572,13 +579,13 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
           <div>
             <p className="slate-lbl">Source video (+7s continuation · {displayDur}s total)</p>
             {srcVideo ? (
-              <button
-                type="button"
-                onClick={() => set({ video: srcVideo.id })}
-                className="w-full text-left slate-card p-2 flex items-center gap-2.5 hover:border-[#3FA96D]"
-                style={{ background: "var(--surface-2)" }}
-                title="Open source video"
-              >
+              <SlateTooltip tip="Open source video">
+                <button
+                  type="button"
+                  onClick={() => set({ video: srcVideo.id })}
+                  className="w-full text-left slate-card p-2 flex items-center gap-2.5 hover:border-[#3FA96D]"
+                  style={{ background: "var(--surface-2)" }}
+                >
                 <span className="w-24 aspect-video rounded-[7px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative grid place-items-center">
                   {srcVideo.thumb ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -592,6 +599,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
                   <span className="block text-[11px] font-mono text-muted mt-0.5">{srcVideo.dur}s · {srcVideo.res} · {srcVideo.aspect} → +7s = {displayDur}s</span>
                 </span>
               </button>
+              </SlateTooltip>
             ) : v.inputs.extendVideo ? (
               <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>Source video deleted — this clip keeps its {displayDur}s output but can&apos;t chain further from the original.</p>
             ) : (
@@ -763,7 +771,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
   const start = async () => {
     if (busy) return;
     if (!v.url) {
-      push("No playable file — re-upload this video first (blob URLs die on reload).", { icon: "!", tone: "danger" });
+      push("No playable file stored for this video — regenerate or re-upload it.", { icon: "!", tone: "danger" });
       return;
     }
     const parsed = ytPublishSchema.safeParse({ title, description: desc, privacy });
@@ -842,7 +850,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
               {info.processingStatus === "succeeded" ? "Live" : info.processingStatus === "failed" ? "Failed" : info.processingStatus === "terminated" ? "Terminated" : info.processingStatus === "processing" ? "Processing" : "Uploaded"}
             </SlateBadge>
             <a className="text-[12.5px] font-mono text-[#1C7247] truncate" href={info.url} target="_blank" rel="noopener noreferrer">{info.url}</a>
-            <SlateButton variant="ghost" size="sm" onClick={refresh} title="Refresh status & views" className="ml-auto">
+            <SlateButton variant="ghost" size="sm" onClick={refresh} tip="Refresh status & views" className="ml-auto">
               <RefreshCw className="size-3.5" /> Refresh
             </SlateButton>
           </div>
