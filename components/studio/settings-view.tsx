@@ -334,10 +334,14 @@ export function SettingsView() {
 function BackupCard() {
   const push = useToasts((s) => s.push);
   const reloadProjects = useStudio((s) => s.reloadProjects);
+  const projects = useStudio((s) => s.projects);
+  const totals = useStudio((s) => s.totals);
   // All scopes default off: a bare backup is projects + settings only.
   const [incElements, setIncElements] = useState(false);
   const [incGenerated, setIncGenerated] = useState(false);
   const [incUploads, setIncUploads] = useState(false);
+  // "all" or one project id — per-project archives stay far under the 1 GB cap.
+  const [scopeProject, setScopeProject] = useState("all");
   const [busy, setBusy] = useState(false);
   const [inspect, setInspect] = useState<{
     file: File;
@@ -348,7 +352,10 @@ function BackupCard() {
   const download = () => {
     if (busy) return;
     setBusy(true);
-    void api.downloadBackup({ elements: incElements, generated: incGenerated, uploads: incUploads }).then(
+    void api.downloadBackup({
+      elements: incElements, generated: incGenerated, uploads: incUploads,
+      ...(scopeProject !== "all" ? { projectId: scopeProject } : {}),
+    }).then(
       ({ blob, filename }) => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -404,7 +411,30 @@ function BackupCard() {
       <div className="p-4 space-y-3">
         <p className="text-[11.5px] text-muted leading-relaxed">
           Projects + connection settings are always included. Toggle what else goes in — all off by default.
+          Over 1 GB total? Back up one project at a time.
         </p>
+        <div>
+          <SlateLabel>Project scope</SlateLabel>
+          <SlateDropdown
+            label={scopeProject === "all" ? "All projects" : (projects.find((p) => p.id === scopeProject)?.name ?? scopeProject)}
+            btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
+            menu={(close) => (
+              <>
+                <SlateOption active={scopeProject === "all"} sub="everything" onPick={() => setScopeProject("all")} onClose={close}>
+                  All projects
+                </SlateOption>
+                {projects.map((p) => {
+                  const n = totals?.byProject.find((b) => b.projectId === p.id)?.videos ?? p.library.length;
+                  return (
+                    <SlateOption key={p.id} active={scopeProject === p.id} sub={`${n} videos`} onPick={() => setScopeProject(p.id)} onClose={close}>
+                      {p.name}
+                    </SlateOption>
+                  );
+                })}
+              </>
+            )}
+          />
+        </div>
         {([
           ["Elements (faces, places, props, stills)", incElements, setIncElements],
           ["Generated library + videos", incGenerated, setIncGenerated],

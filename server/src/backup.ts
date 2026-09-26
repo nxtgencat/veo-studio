@@ -21,6 +21,8 @@ export interface BackupOptions {
   elements: boolean;
   generated: boolean;
   uploads: boolean;
+  /** Optional: scope the whole archive to one project (the >1 GB answer). */
+  projectId?: string;
 }
 
 export interface RestoreReport {
@@ -46,8 +48,17 @@ function insertIgnore(table: string, columns: string[], rows: Table): { imported
 export async function buildBackup(opts: BackupOptions): Promise<{ filename: string; bytes: Uint8Array }> {
   const db = getDb();
   const files: Record<string, string | Uint8Array> = {};
-  const projects = db.query("SELECT * FROM projects ORDER BY created_at").all() as Table;
-  const settings = db.query("SELECT * FROM project_settings").all() as Table;
+  const pid = opts.projectId;
+  const projects = (
+    pid
+      ? db.query("SELECT * FROM projects WHERE id=?").all(pid)
+      : db.query("SELECT * FROM projects ORDER BY created_at").all()
+  ) as Table;
+  const settings = (
+    pid
+      ? db.query("SELECT * FROM project_settings WHERE project_id=?").all(pid)
+      : db.query("SELECT * FROM project_settings").all()
+  ) as Table;
   files["projects.json"] = JSON.stringify(projects);
   files["settings.json"] = JSON.stringify(settings);
 
@@ -74,7 +85,11 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
 
   let elements: Table = [];
   if (opts.elements) {
-    elements = db.query("SELECT * FROM elements ORDER BY created_at").all() as Table;
+    elements = (
+      pid
+        ? db.query("SELECT * FROM elements WHERE project_id=? ORDER BY created_at").all(pid)
+        : db.query("SELECT * FROM elements ORDER BY created_at").all()
+    ) as Table;
     files["elements.json"] = JSON.stringify(elements);
   }
 
@@ -84,7 +99,9 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
     const conds: string[] = [];
     if (opts.generated) conds.push("model != 'import'");
     if (opts.uploads) conds.push("model = 'import'");
-    library = db.query(`SELECT * FROM library WHERE ${conds.join(" OR ")} ORDER BY created_at`).all() as Table;
+    const scope = pid ? "project_id=? AND " : "";
+    const args = pid ? [pid] : [];
+    library = db.query(`SELECT * FROM library WHERE ${scope}(${conds.join(" OR ")}) ORDER BY created_at`).all(...args) as Table;
     files["library.json"] = JSON.stringify(library);
     for (const v of library) {
       const url = String((v as Record<string, unknown>).video_url ?? "");
@@ -93,9 +110,11 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
     }
   }
   if (opts.generated) {
-    jobs = db
-      .query("SELECT * FROM jobs WHERE status IN ('succeeded','failed','cancelled') ORDER BY created_at")
-      .all() as Table;
+    jobs = (
+      pid
+        ? db.query("SELECT * FROM jobs WHERE project_id=? AND status IN ('succeeded','failed','cancelled') ORDER BY created_at").all(pid)
+        : db.query("SELECT * FROM jobs WHERE status IN ('succeeded','failed','cancelled') ORDER BY created_at").all()
+    ) as Table;
     files["jobs.json"] = JSON.stringify(jobs);
   }
   files["media.json"] = JSON.stringify(mediaIndex);
@@ -117,9 +136,11 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
   files["manifest.json"] = JSON.stringify(manifest, null, 2);
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  // Fail fast before archiving: JSON thumbs/posters count toward the cap too.
+  const tag = pid ? `${String(pid).replace(/[^a-z0-9-]+/gi, "-").slice(0, 40)}-` : "";
+  // Fail fast before archiving: JSON thumbs/posters count toward the cap too
+  // (media bytes are already tracked in mediaTotal — strings only here).
   let jsonBytes = 0;
-  for (const v of Object.values(files)) jsonBytes += typeof v === "string" ? v.length : v.byteLength;
+  for (const v of Object.values(files)) if (typeof v === "string") jsonBytes += v.length;
   if (mediaTotal + jsonBytes > BACKUP_MAX_BYTES) {
     throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
       code: "E_BACKUP_TOO_LARGE",
@@ -132,7 +153,7 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
       code: "E_BACKUP_TOO_LARGE",
     });
   }
-  return { filename: `veo-backup-${stamp}.tar`, bytes };
+  return { filename: `veo-backup-${tag}${stamp}.tar`, bytes };
 }
 
 const JSON_FILE = /^(manifest|projects|settings|elements|library|jobs|media)\.json$/;

@@ -456,7 +456,11 @@ app.get("/stats", (c) => {
   ).get() as { videos: number; spend: number };
   const projs = db.query("SELECT COUNT(*) AS n FROM projects").get() as { n: number };
   const spend = Math.round(lib.spend * 100) / 100;
-  return c.json({ projects: projs.n, videos: lib.videos, delivered: lib.videos, spend });
+  const byProject = db.query(
+    "SELECT project_id AS projectId, COUNT(*) AS videos, COALESCE(SUM(cost_estimate), 0) AS spend FROM library WHERE status='succeeded' GROUP BY project_id",
+  ).all() as { projectId: string; videos: number; spend: number }[];
+  for (const r of byProject) r.spend = Math.round(r.spend * 100) / 100;
+  return c.json({ projects: projs.n, videos: lib.videos, delivered: lib.videos, spend, byProject });
 });
 
 // ---------- library ----------
@@ -571,6 +575,7 @@ app.get("/backup", async (c) => {
     elements: q.elements === "1",
     generated: q.generated === "1",
     uploads: q.uploads === "1",
+    ...(q.projectId ? { projectId: q.projectId } : {}),
   };
   try {
     const { filename, bytes } = await buildBackup(opts);

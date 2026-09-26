@@ -172,7 +172,10 @@ export const api = {
 
   capabilities: () => req<Capabilities>("/models/capabilities"),
 
-  stats: () => req<{ projects: number; videos: number; delivered: number; spend: number }>("/stats"),
+  stats: () => req<{
+    projects: number; videos: number; delivered: number; spend: number;
+    byProject: { projectId: string; videos: number; spend: number }[];
+  }>("/stats"),
 
   listProjects: () => req<{ projects: ServerProject[] }>("/projects"),
   createProject: (name: string) =>
@@ -230,11 +233,12 @@ export const api = {
     return { id: json.id, url: json.url, bytes: json.bytes ?? 0, mime: json.mime ?? "" };
   },
 
-  downloadBackup: async (opts: { elements: boolean; generated: boolean; uploads: boolean }): Promise<{ blob: Blob; filename: string }> => {
+  downloadBackup: async (opts: { elements: boolean; generated: boolean; uploads: boolean; projectId?: string }): Promise<{ blob: Blob; filename: string }> => {
     const q = new URLSearchParams({
       elements: opts.elements ? "1" : "0",
       generated: opts.generated ? "1" : "0",
       uploads: opts.uploads ? "1" : "0",
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
     }).toString();
     let res: Response;
     try {

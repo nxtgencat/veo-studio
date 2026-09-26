@@ -221,7 +221,10 @@ interface StudioState {
   refreshing: boolean;
   authRequired: boolean;
   /** Server-side account totals (all projects, even never-opened ones). */
-  totals: { projects: number; videos: number; delivered: number; spend: number } | null;
+  totals: {
+    projects: number; videos: number; delivered: number; spend: number;
+    byProject: { projectId: string; videos: number; spend: number }[];
+  } | null;
   login: (password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   serverSettings: (projectId: string) => ServerSettings | undefined;
