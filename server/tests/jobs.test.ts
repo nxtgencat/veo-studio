@@ -223,6 +223,28 @@ describe("async job flow", () => {
     setDriverForTests(null);
   });
 
+  test("RAI-filtered output fails loudly instead of succeeding empty", async () => {
+    setDriverForTests({
+      submit: async () => "operations/rai",
+      get: async () => ({
+        name: "operations/rai", done: true, videoUris: [],
+        raiFiltered: { count: 2, reasons: ["body parts"] },
+      }),
+      cancel: async () => ({ cancelled: true, alreadyDone: false }),
+    });
+    const { createJob, getJob } = await import("../src/jobs.ts");
+    const r = createJob(base, "key-rai");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    for (let i = 0; i < 100 && (getJob(r.jobId) as any).status !== "failed"; i++) {
+      await Bun.sleep(20);
+    }
+    const row = getJob(r.jobId) as any;
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("RAI_FILTERED");
+    setDriverForTests(null);
+  });
+
   test("crash recovery resumes ops and expires unsubmitted jobs", async () => {
     const { recoverInterrupted } = await import("../src/jobs.ts");
     const now = new Date().toISOString();

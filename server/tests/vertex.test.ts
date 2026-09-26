@@ -65,4 +65,31 @@ describe("vertex fetch", () => {
       (globalThis as any).fetch = orig;
     }
   });
+
+  test("surfaces RAI filtering and https output URLs", async () => {
+    const orig = globalThis.fetch;
+    (globalThis as any).fetch = async () => {
+      return new Response(
+        JSON.stringify({
+          name: "operations/2",
+          done: true,
+          response: {
+            "@type": "x",
+            raiMediaFilteredCount: 1,
+            raiMediaFilteredReasons: ["face"],
+            videos: [{ uri: "https://storage.googleapis.com/b/vid" }],
+          },
+        }),
+        { status: 200 },
+      );
+    };
+    try {
+      const op = await vertexFetchOp("veo-3.1-fast-generate-001", "operations/2", ctx);
+      expect(op.done).toBe(true);
+      expect(op.videoUris).toEqual(["https://storage.googleapis.com/b/vid"]);
+      expect(op.raiFiltered).toEqual({ count: 1, reasons: ["face"] });
+    } finally {
+      (globalThis as any).fetch = orig;
+    }
+  });
 });

@@ -28,6 +28,7 @@ export type Driver = {
     videoUris: string[];
     videoBytes?: { base64: string; mime: string };
     responseKeys?: string[];
+    raiFiltered?: { count: number; reasons: string[] };
   }>;
   cancel: (name: string) => Promise<{ cancelled: boolean; alreadyDone: boolean }>;
 };
@@ -390,7 +391,18 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
       notFoundStreak = 0;
       if (op.done) {
         if (op.error) failJob(jobId, op.error);
-        else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes, op.responseKeys);
+        else if (
+          (op.raiFiltered?.count ?? 0) > 0 &&
+          !(op.videoUris ?? []).length &&
+          !op.videoBytes
+        ) {
+          const why = (op.raiFiltered?.reasons ?? []).filter(Boolean).join("; ");
+          failJob(
+            jobId,
+            `RAI_FILTERED: Vertex blocked all output on this render (responsible-AI filter${why ? `: ${why}` : ""}). ` +
+              "No playable file was produced — try different references or rephrase the prompt.",
+          );
+        } else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes, op.responseKeys);
         return;
       }
     } catch (e: any) {

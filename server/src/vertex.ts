@@ -49,6 +49,8 @@ export type VertexOperation = {
   videoUris: string[];
   /** First inline payload found (no-bucket outputs), capped — may be absent. */
   videoBytes?: { base64: string; mime: string };
+  /** Responsible-AI filtering: outputs blocked, nothing downloadable. */
+  raiFiltered?: { count: number; reasons: string[] };
   /** Top-level response keys (diagnostics for unrecognized shapes). */
   responseKeys?: string[];
 };
@@ -212,19 +214,28 @@ export async function vertexFetchOp(
       { code: "E_VERTEX_GET", status: res.status },
     );
   }
-  const json = (await res.json()) as { name?: string; done?: boolean; error?: { message?: string }; response?: unknown };
+  const json = (await res.json()) as {
+    name?: string; done?: boolean; error?: { message?: string }; response?: unknown;
+  };
   const uris = json.done ? collectVideoUris(json.response) : [];
   const inline = json.done ? collectVideoBytes(json.response) : null;
-  const responseKeys =
-    json.done && json.response && typeof json.response === "object" && !Array.isArray(json.response)
-      ? Object.keys(json.response as Record<string, unknown>).slice(0, 12)
-      : [];
+  const resp = json.done && json.response && typeof json.response === "object" && !Array.isArray(json.response)
+    ? (json.response as Record<string, unknown>)
+    : null;
+  const responseKeys = resp ? Object.keys(resp).slice(0, 12) : [];
+  // done + filtered + no outputs = blocked, not successful (Veo returns no
+  // error in this case — the filter fields are the only signal).
+  const raiCount = resp && typeof resp.raiMediaFilteredCount === "number" ? resp.raiMediaFilteredCount : 0;
+  const raiReasons = resp && Array.isArray(resp.raiMediaFilteredReasons)
+    ? (resp.raiMediaFilteredReasons as unknown[]).map(String).slice(0, 4)
+    : [];
   return {
     name: json.name ?? opName,
     done: !!json.done,
     error: json.error?.message,
     videoUris: uris,
     ...(inline ? { videoBytes: inline } : {}),
+    ...(raiCount > 0 ? { raiFiltered: { count: raiCount, reasons: raiReasons } } : {}),
     responseKeys,
   };
 }
