@@ -9,7 +9,7 @@ import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
 import { probeVideoMetadata, videoMetaToResAspect } from "./frames.ts";
 import { deleteMedia, getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
-import { BACKUP_MAX_BYTES, buildBackup, parseBackup, restoreBackup } from "./backup.ts";
+import { BACKUP_MAX_BYTES, buildBackupFile, inspectBackupFile, restoreBackupFile, backupTmpPath, removeBackupTmp } from "./backup.ts";
 import { capabilitiesSnapshot, getModel } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
@@ -200,11 +200,10 @@ app.delete("/elements/:id", (c) => {
 });
 
 // ---------- project settings (auth + bucket; SA key never leaves the server) ----------
-app.get("/projects/:id/settings", (c) => {
-  const pid = c.req.param("id");
-  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
-    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
-  }
+// Built once and shared: PATCH used to re-fetch via an internal sub-request,
+// which carries no Authorization header and 401s behind the password gate —
+// blanking both cards until refresh. Never do authed sub-requests to self.
+function settingsBody(pid: string): Record<string, unknown> {
   const s = getSettings(pid);
   let saEmail: string | null = null;
   let saProjectId: string | null = null;
@@ -215,7 +214,7 @@ app.get("/projects/:id/settings", (c) => {
       saProjectId = sa.project_id;
     } catch { /* stored key invalid — surface via hasSaJson only */ }
   }
-  return c.json({
+  return {
     projectId: pid,
     bucket: s.bucket,
     useBucket: s.useBucket,
@@ -224,7 +223,15 @@ app.get("/projects/:id/settings", (c) => {
     saEmail,
     saProjectId,
     bucketLocation: null as string | null,
-  });
+  };
+}
+
+app.get("/projects/:id/settings", (c) => {
+  const pid = c.req.param("id");
+  if (!getDb().query("SELECT id FROM projects WHERE id=?").get(pid)) {
+    return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  }
+  return c.json(settingsBody(pid));
 });
 
 const settingsSchema = z.object({
@@ -258,9 +265,7 @@ app.patch("/projects/:id/settings", async (c) => {
   // rotated same-email key would otherwise keep minting with the revoked one).
   if (parsed.data.saJson !== undefined) clearTokenCache();
   logger.info({ projectId: pid, authMode: parsed.data.authMode, useBucket: parsed.data.useBucket }, "project settings saved");
-  const res = await app.request(`/projects/${pid}/settings`);
-  const body = (await res.json()) as Record<string, unknown>;
-  return c.json({ ...body, bucketCheck: lastBucketCheck.get(pid) ?? null, bucketLocation: lastBucketCheck.get(pid)?.location ?? null });
+  return c.json({ ...settingsBody(pid), bucketCheck: lastBucketCheck.get(pid) ?? null, bucketLocation: lastBucketCheck.get(pid)?.location ?? null });
 });
 
 /**
@@ -279,6 +284,17 @@ async function verifySettingsLive(
   // would fail verification and brick both remove and re-add. Clearing proves
   // nothing and verifies nothing — it just clears.
   const clearingSa = patch.saJson !== undefined && !patch.saJson.trim();
+  // Toggle-off touches no credentials and verifies nothing: it must work
+  // even with a dead stored key or no network (otherwise you couldn't turn
+  // the bucket off without disconnecting first).
+  if (
+    patch.saJson === undefined &&
+    patch.bucket === undefined &&
+    patch.authMode === undefined &&
+    patch.useBucket === false
+  ) {
+    return;
+  }
   // Effective key: fresh paste wins, otherwise the stored one.
   let sa: SaCreds | null = null;
   if (patch.saJson !== undefined && patch.saJson.trim()) {
@@ -585,8 +601,8 @@ app.get("/backup", async (c) => {
     ...(q.projectId ? { projectId: q.projectId } : {}),
   };
   try {
-    const { filename, bytes } = await buildBackup(opts);
-    return new Response(bytes, {
+    const { filename, path } = await buildBackupFile(opts);
+    return new Response(Bun.file(path), {
       headers: {
         "Content-Type": "application/x-tar",
         "Content-Disposition": `attachment; filename="${filename}"`,
@@ -598,49 +614,48 @@ app.get("/backup", async (c) => {
 });
 
 app.post("/restore", async (c) => {
-  const data = await readArchiveBody(c);
-  if (typeof data === "string") return err(c, 400, "FILE_REQUIRED", data);
-  if (data === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  const up = await readUploadTmp(c);
+  if (up === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  if (typeof up !== "string") return err(c, 400, "FILE_REQUIRED", up.message);
   try {
-    return c.json(await restoreBackup(data));
+    return c.json(await restoreBackupFile(up));
   } catch (e: any) {
     const code = e?.code ?? "RESTORE_FAILED";
     const status = code === "E_BACKUP_TOO_LARGE" ? 413 : 422;
     return err(c, status, code, e?.message ?? "Restore failed");
+  } finally {
+    removeBackupTmp(up);
   }
 });
 
 /** Inspect an archive without importing anything (confirm-before-restore). */
 app.post("/restore/inspect", async (c) => {
-  const data = await readArchiveBody(c);
-  if (typeof data === "string") return err(c, 400, "FILE_REQUIRED", data);
-  if (data === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  const up = await readUploadTmp(c);
+  if (up === null) return err(c, 413, "BACKUP_TOO_LARGE", "Archive exceeds the 1 GB cap");
+  if (typeof up !== "string") return err(c, 400, "FILE_REQUIRED", up.message);
   try {
-    const parsed = await parseBackup(data, false);
-    const mediaBytes = [...parsed.mediaFiles.values()].reduce((a, f) => a + f.bytes.length, 0);
-    return c.json({
-      manifest: parsed.manifest,
-      counts: {
-        projects: parsed.projects.length,
-        settings: parsed.settings.length,
-        elements: parsed.elements.length,
-        library: parsed.library.length,
-        jobs: parsed.jobs.length,
-        media: parsed.mediaFiles.size,
-        mediaBytes,
-      },
-    });
+    const { manifest, counts } = await inspectBackupFile(up);
+    return c.json({ manifest, counts });
   } catch (e: any) {
     return err(c, 422, e?.code ?? "RESTORE_FAILED", e?.message ?? "Inspect failed");
+  } finally {
+    removeBackupTmp(up);
   }
 });
 
-async function readArchiveBody(c: any): Promise<Uint8Array | string | null> {
+/**
+ * Stream an uploaded archive straight to disk (constant RAM) instead of
+ * buffering it. Returns the temp path, null when over the cap, or a message.
+ */
+async function readUploadTmp(c: any): Promise<string | { message: string } | null> {
   const form = await c.req.formData().catch(() => null);
   const file = form?.get("file");
-  if (!(file instanceof Blob)) return "Multipart field 'file' (.tar) is required";
+  if (!(file instanceof Blob)) return { message: "Multipart field 'file' (.tar) is required" };
   if (file.size > BACKUP_MAX_BYTES) return null;
-  return new Uint8Array(await file.arrayBuffer());
+  if (!file.size) return { message: "Uploaded file is empty" };
+  const path = `${backupTmpPath("upload")}.tar`;
+  await Bun.write(path, (file as Blob).stream());
+  return path;
 }
 
 // ---------- capabilities ----------

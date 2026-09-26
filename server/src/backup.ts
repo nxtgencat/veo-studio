@@ -8,10 +8,19 @@
 //   generated: library rows (model != import) + terminal jobs + their media
 //   uploads: library rows (model = import) + their media files
 // Restore merges with INSERT OR IGNORE (existing IDs are skipped, reported).
+//
+// Memory discipline (measured on a ~1 GB library): Bun.Archive is
+// buffer-in/buffer-out by design — no streaming input exists upstream — so
+// the file-based paths below are the efficient shape: uploads stream to disk,
+// builds stream to disk via Archive.write, downloads stream from disk, and
+// only one direction ever holds a full copy. Peak ≈ 1× file instead of 2-3×.
 
 import { getDb } from "./db.ts";
 import { extForMime, importMediaFile } from "./media-store.ts";
 import { childLogger } from "./logger.ts";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 
 const log = childLogger({ module: "backup" });
 
@@ -23,6 +32,43 @@ export interface BackupOptions {
   uploads: boolean;
   /** Optional: scope the whole archive to one project (the >1 GB answer). */
   projectId?: string;
+}
+
+function backupTmpRoot(): string {
+  const d = join(tmpdir(), "veo-backup");
+  mkdirSync(d, { recursive: true });
+  return d;
+}
+
+/** Unique temp path (caller appends extension as needed). */
+export function backupTmpPath(kind: "build" | "upload" | "restore"): string {
+  return join(backupTmpRoot(), `${kind}-${process.pid}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`);
+}
+
+/** Best-effort cleanup of our temp files (crash leftovers, served downloads). */
+export function sweepBackupTmp(maxAgeMs = 30 * 60 * 1000): void {
+  try {
+    const root = backupTmpRoot();
+    const now = Date.now();
+    for (const f of readdirSync(root)) {
+      if (!/^(build|upload|restore)-/.test(f)) continue;
+      const p = join(root, f);
+      try {
+        const st = statSync(p);
+        const age = now - st.mtimeMs;
+        const gone = st.isDirectory()
+          ? readdirSync(p).length === 0 || age > maxAgeMs
+          : age > maxAgeMs;
+        if (gone) rmSync(p, { recursive: true, force: true });
+      } catch { /* racing delete */ }
+    }
+  } catch { /* tmp missing — nothing to do */ }
+}
+
+export function removeBackupTmp(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch { /* already gone */ }
 }
 
 export interface RestoreReport {
@@ -46,6 +92,42 @@ function insertIgnore(table: string, columns: string[], rows: Table): { imported
 }
 
 export async function buildBackup(opts: BackupOptions): Promise<{ filename: string; bytes: Uint8Array }> {
+  const { files, filename } = await assembleBackup(opts);
+  const archive = new Bun.Archive(files);
+  const bytes = await archive.bytes();
+  if (bytes.length > BACKUP_MAX_BYTES) {
+    throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
+      code: "E_BACKUP_TOO_LARGE",
+    });
+  }
+  return { filename, bytes };
+}
+
+/**
+ * Disk-streamed build for production: the input map still lives in RAM
+ * (Bun.Archive has no streaming input), but the ~1 GB output streams
+ * straight to disk instead of a second full copy — and serving streams
+ * from disk too. Peak ≈ 1× file instead of ≈ 2×.
+ */
+export async function buildBackupFile(opts: BackupOptions): Promise<{ filename: string; path: string }> {
+  sweepBackupTmp();
+  const { files, filename } = await assembleBackup(opts);
+  const path = `${backupTmpPath("build")}.tar`;
+  await Bun.Archive.write(path, files);
+  if (statSync(path).size > BACKUP_MAX_BYTES) {
+    removeBackupTmp(path);
+    throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
+      code: "E_BACKUP_TOO_LARGE",
+    });
+  }
+  // Served for up to 10 minutes, then swept.
+  setTimeout(() => removeBackupTmp(path), 10 * 60 * 1000).unref?.();
+  return { filename, path };
+}
+
+async function assembleBackup(opts: BackupOptions): Promise<{
+  files: Record<string, string | Uint8Array>; filename: string;
+}> {
   const db = getDb();
   const files: Record<string, string | Uint8Array> = {};
   const pid = opts.projectId;
@@ -146,14 +228,7 @@ export async function buildBackup(opts: BackupOptions): Promise<{ filename: stri
       code: "E_BACKUP_TOO_LARGE",
     });
   }
-  const archive = new Bun.Archive(files);
-  const bytes = await archive.bytes();
-  if (bytes.length > BACKUP_MAX_BYTES) {
-    throw Object.assign(new Error("Backup exceeds the 1 GB cap — deselect media-heavy scopes"), {
-      code: "E_BACKUP_TOO_LARGE",
-    });
-  }
-  return { filename: `veo-backup-${tag}${stamp}.tar`, bytes };
+  return { files, filename: `veo-backup-${tag}${stamp}.tar` };
 }
 
 const JSON_FILE = /^(manifest|projects|settings|elements|library|jobs|media)\.json$/;
@@ -247,13 +322,17 @@ export async function parseBackup(data: Uint8Array, loadMedia: boolean): Promise
   };
 }
 
-export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
-  const parsed = await parseBackup(data, true);
-
-  const report: RestoreReport = {
+function emptyReport(): RestoreReport {
+  return {
     imported: { projects: 0, settings: 0, elements: 0, library: 0, jobs: 0, media: 0 },
     skipped: { projects: 0, elements: 0, library: 0, jobs: 0, media: 0 },
   };
+}
+
+function applyTables(
+  report: RestoreReport,
+  parsed: { projects: Table; settings: Table; elements: Table; library: Table; jobs: Table },
+): void {
   const apply = (
     key: "projects" | "elements" | "library" | "jobs",
     table: string,
@@ -290,6 +369,12 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
     ["id", "project_id", "idempotency_key", "mode", "model", "prompt", "resolution", "aspect", "duration_seconds", "audio", "sample_count", "seed", "inputs_json", "status", "progress", "error", "cost_estimate", "vertex_operation", "webhook_url", "created_at", "updated_at"],
     parsed.jobs,
   );
+}
+
+export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
+  const parsed = await parseBackup(data, true);
+  const report = emptyReport();
+  applyTables(report, parsed);
 
   // Media files (already loaded by parseBackup).
   const db = getDb();
@@ -305,4 +390,131 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
 
   log.info({ imported: report.imported, skipped: report.skipped }, "backup restored");
   return report;
+}
+
+/** Allowlisted entry check shared by both restore paths. */
+function assertSafeEntries(names: Iterable<string>): void {
+  for (const path of names) {
+    if (!JSON_FILE.test(path) && !MEDIA_FILE.test(path)) {
+      throw Object.assign(new Error(`Unexpected path in archive: ${path}`), { code: "E_BACKUP_INVALID" });
+    }
+  }
+}
+
+async function readJsonTable<T>(read: (name: string) => Promise<string | null>, name: string, required: boolean): Promise<Table> {
+  const text = await read(name);
+  if (text == null) {
+    if (required) throw Object.assign(new Error(`Archive is missing ${name}`), { code: "E_BACKUP_INVALID" });
+    return [];
+  }
+  try {
+    const j = JSON.parse(text) as unknown;
+    if (!Array.isArray(j)) throw new Error("not an array");
+    return j as Table;
+  } catch {
+    throw Object.assign(new Error(`${name} is corrupt`), { code: "E_BACKUP_INVALID" });
+  }
+}
+
+function parseManifest(text: string | null): ParsedBackup["manifest"] {
+  if (!text) throw Object.assign(new Error("Archive is missing manifest.json"), { code: "E_BACKUP_INVALID" });
+  const manifest = JSON.parse(text) as ParsedBackup["manifest"];
+  if (manifest.version !== 1) {
+    throw Object.assign(new Error(`Unsupported backup version ${String(manifest.version)}`), {
+      code: "E_BACKUP_VERSION",
+    });
+  }
+  return manifest;
+}
+
+/**
+ * Disk-based restore for production: the upload streams to disk, the archive
+ * constructor sees one bounded copy, entries extract to disk, and media files
+ * import one at a time. Peak ≈ 1× file instead of ≈ 2-3×.
+ */
+export async function restoreBackupFile(path: string): Promise<RestoreReport> {
+  if (statSync(path).size > BACKUP_MAX_BYTES) {
+    throw Object.assign(new Error("Archive exceeds the 1 GB cap"), { code: "E_BACKUP_TOO_LARGE" });
+  }
+  const work = `${backupTmpPath("restore")}-dir`;
+  mkdirSync(work, { recursive: true });
+  try {
+    const archive = new Bun.Archive(await Bun.file(path).bytes());
+    await archive.extract(work);
+    const names: string[] = [];
+    const walk = (dir: string, prefix: string): void => {
+      for (const f of readdirSync(dir, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${f.name}` : f.name;
+        if (f.isDirectory()) walk(join(dir, f.name), rel);
+        else names.push(rel);
+      }
+    };
+    walk(work, "");
+    assertSafeEntries(names);
+    const read = async (name: string): Promise<string | null> => {
+      const p = join(work, name);
+      try {
+        return await Bun.file(p).text();
+      } catch {
+        return null;
+      }
+    };
+    const manifest = parseManifest(await read("manifest.json"));
+    const parsed = {
+      projects: await readJsonTable(read, "projects.json", true),
+      settings: await readJsonTable(read, "settings.json", false),
+      elements: await readJsonTable(read, "elements.json", false),
+      library: await readJsonTable(read, "library.json", false),
+      jobs: await readJsonTable(read, "jobs.json", false),
+    };
+    let mediaIndex: ParsedBackup["mediaIndex"] = {};
+    try {
+      const raw = await read("media.json");
+      if (raw) {
+        const j = JSON.parse(raw) as unknown;
+        if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("bad index");
+        mediaIndex = j as Record<string, { mime?: string }>;
+      }
+    } catch {
+      throw Object.assign(new Error("media.json is corrupt"), { code: "E_BACKUP_INVALID" });
+    }
+    const report = emptyReport();
+    applyTables(report, parsed);
+    const db = getDb();
+    for (const name of names) {
+      const m = MEDIA_FILE.exec(name);
+      if (!m?.[1]) continue;
+      const id = m[1];
+      if (db.query("SELECT id FROM media WHERE id=?").get(id)) {
+        report.skipped.media++;
+        continue;
+      }
+      const bytes = new Uint8Array(await Bun.file(join(work, name)).bytes());
+      if (await importMediaFile(id, bytes, mediaIndex[id]?.mime ?? "video/mp4")) report.imported.media++;
+      else report.skipped.media++;
+    }
+    log.info({ imported: report.imported, skipped: report.skipped }, "backup restored");
+    return report;
+  } finally {
+    removeBackupTmp(work);
+  }
+}
+
+/**
+ * Disk-based inspect: only the manifest materializes (counts ship inside it),
+ * so even a 1 GB upload costs kilobytes of RAM here.
+ */
+export async function inspectBackupFile(path: string): Promise<{
+  manifest: ParsedBackup["manifest"];
+  counts: Record<string, number>;
+}> {
+  if (statSync(path).size > BACKUP_MAX_BYTES) {
+    throw Object.assign(new Error("Archive exceeds the 1 GB cap"), { code: "E_BACKUP_TOO_LARGE" });
+  }
+  const archive = new Bun.Archive(await Bun.file(path).bytes());
+  const files = await archive.files("manifest.json");
+  const entry = files.get("manifest.json");
+  if (!entry) throw Object.assign(new Error("Archive is missing manifest.json"), { code: "E_BACKUP_INVALID" });
+  const manifest = parseManifest(await entry.text());
+  return { manifest, counts: manifest.counts };
 }

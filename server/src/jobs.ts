@@ -347,9 +347,11 @@ async function resolveExtendSource(
       return { bytes: inline.bytes, mime: inline.mime };
     }
     if (inputs.sourceVideoId) {
+      // Scoped to the job's project (elements enforce this too) — a foreign
+      // sourceVideoId resolves to nothing instead of leaking bytes across.
       const src = getDb()
-        .query("SELECT video_url, gcs_uri FROM library WHERE id=?")
-        .get(inputs.sourceVideoId) as { video_url: string; gcs_uri: string } | null;
+        .query("SELECT video_url, gcs_uri FROM library WHERE id=? AND project_id=?")
+        .get(inputs.sourceVideoId, row.project_id) as { video_url: string; gcs_uri: string } | null;
       const gcs = src?.gcs_uri?.startsWith("gs://")
         ? src.gcs_uri
         : src?.video_url?.startsWith("gs://")
