@@ -246,6 +246,7 @@ interface StudioState {
   attachElement: (cat: ElementCat, img: string) => void;
   loadIntoComposer: (videoId: string) => { ok: boolean; error?: string; missing?: string[] };
   addElement: (cat: ElementCat, data: { name: string; imageUrl: string; note: string }) => Promise<{ ok: boolean; error?: string }>;
+  renameElement: (id: string, data: { name: string; note: string }) => Promise<{ ok: boolean; error?: string }>;
   deleteElement: (id: string) => Promise<void>;
   setYoutube: (videoId: string, patch: Record<string, unknown>) => void;
   saveSettings: (patch: Partial<Project["settings"]>) => Promise<void>;
@@ -854,6 +855,23 @@ export const useStudio = create<StudioState>()((set, get) => {
       }
       set({ elements: get().elements.filter((e) => e.id !== id) });
       rebuild({});
+    },
+
+    renameElement: async (id, data) => {
+      const name = data.name.trim().slice(0, 80);
+      if (!name) return { ok: false, error: "Name is required." };
+      try {
+        await api.updateElement(id, { name, note: data.note.trim().slice(0, 200) });
+      } catch (e) {
+        return { ok: false, error: errOf(e) };
+      }
+      set({
+        elements: get().elements.map((e) =>
+          e.id === id ? { ...e, name, note: data.note.trim().slice(0, 200) } : e,
+        ),
+      });
+      rebuild({});
+      return { ok: true };
     },
 
     setYoutube: (videoId, patch) => {

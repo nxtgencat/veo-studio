@@ -4,7 +4,7 @@ import { z } from "zod";
 import { isAuthorized, isAuthorizedMedia, passwordRequired } from "./access.ts";
 import { uniqueSlug } from "./slug.ts";
 import { getDb, nowIso } from "./db.ts";
-import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
+import { clearTokenCache, getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
 import { IMAGE_MAX_BYTES, isAllowedImageMime, parseDataUrl, sniffImageMime } from "./images.ts";
 import { probeVideoMetadata, videoMetaToResAspect } from "./frames.ts";
@@ -254,6 +254,9 @@ app.patch("/projects/:id/settings", async (c) => {
   } catch (e: any) {
     return err(c, 422, e?.code ?? "SETTINGS_INVALID", e?.message ?? "Invalid settings");
   }
+  // Key changed or cleared: drop cached tokens (keyed by client_email, so a
+  // rotated same-email key would otherwise keep minting with the revoked one).
+  if (parsed.data.saJson !== undefined) clearTokenCache();
   logger.info({ projectId: pid, authMode: parsed.data.authMode, useBucket: parsed.data.useBucket }, "project settings saved");
   const res = await app.request(`/projects/${pid}/settings`);
   const body = (await res.json()) as Record<string, unknown>;
@@ -272,13 +275,17 @@ async function verifySettingsLive(
 ): Promise<void> {
   const stored = getSettings(projectId);
   const authMode = patch.authMode ?? stored.authMode;
+  // Explicit clear ("") must never exchange the STORED key: a dead stored key
+  // would fail verification and brick both remove and re-add. Clearing proves
+  // nothing and verifies nothing — it just clears.
+  const clearingSa = patch.saJson !== undefined && !patch.saJson.trim();
   // Effective key: fresh paste wins, otherwise the stored one.
   let sa: SaCreds | null = null;
   if (patch.saJson !== undefined && patch.saJson.trim()) {
     sa = parseSaJson(patch.saJson);
     // Prove the key works before saving it.
     await saAccessToken(sa);
-  } else if (authMode === "service_account" && stored.saJson.trim()) {
+  } else if (!clearingSa && authMode === "service_account" && stored.saJson.trim()) {
     sa = parseSaJson(stored.saJson);
   }
   // Effective token for the bucket check.

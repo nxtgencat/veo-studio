@@ -193,6 +193,8 @@ export const api = {
   createElement: (projectId: string, body: { category: string; name: string; imageUrl: string; note: string }) =>
     req<{ id: string; projectId: string; category: string; name: string; imageUrl: string; note: string; createdAt: string }>(`/projects/${projectId}/elements`, { method: "POST", body: JSON.stringify(body) }),
   deleteElement: (id: string) => req<{ deleted: boolean }>(`/elements/${id}`, { method: "DELETE" }),
+  updateElement: (id: string, body: { name?: string; note?: string }) =>
+    req<{ id: string }>(`/elements/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   createJob: (body: Record<string, unknown>, idempotencyKey: string) =>
     req<{ jobId: string; deduped: boolean }>("/composer/jobs", { method: "POST", body: JSON.stringify(body) }, idempotencyKey),
