@@ -28,6 +28,11 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
     (params.projectId ? projects.find((x) => x.id === params.projectId) : undefined) ?? storeActive;
 
   const totalPending = projects.reduce((a, q) => a + pendingOf(q), 0);
+  const totalSpend = projects.reduce((a, q) => a + spendOf(q), 0);
+  const totalVideos = projects.reduce((a, q) => a + q.library.length, 0);
+  const totalDelivered = projects.reduce(
+    (a, q) => a + q.library.filter((v) => v.status === "success").length, 0,
+  );
   const firstRunning = projects.find((x) => pendingOf(x) > 0);
   const region = useStudio((s) => s.caps?.defaults.region ?? "us-central1");
   const rpm = active ? modelOf(active.gen.model).quotaRpm : null;
@@ -133,9 +138,10 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="p-3 pt-2 shrink-0 border-t slate-hair">
             <SpendCard
-              spend={money(spendOf(active))}
-              videos={active.library.length}
-              delivered={active.library.filter((v) => v.status === "success").length}
+              title="Total spend"
+              spend={money(totalSpend)}
+              videos={totalVideos}
+              delivered={totalDelivered}
             />
           </div>
         </SlateSidebar>
@@ -149,9 +155,10 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
         title="Projects"
         footer={
           <SpendCard
-            spend={money(spendOf(active))}
-            videos={active.library.length}
-            delivered={active.library.filter((v) => v.status === "success").length}
+            title="Total spend"
+            spend={money(totalSpend)}
+            videos={totalVideos}
+            delivered={totalDelivered}
           />
         }
       >
@@ -197,10 +204,10 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SpendCard({ spend, videos, delivered }: { spend: string; videos: number; delivered: number }) {
+function SpendCard({ title, spend, videos, delivered }: { title: string; spend: string; videos: number; delivered: number }) {
   return (
     <div className="rounded-[12px] border slate-hair p-3.5 slate-spend-card">
-      <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">Project spend</p>
+      <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">{title}</p>
       <p className="font-display font-bold text-[24px] mt-0.5 leading-none tabular-nums">{spend}</p>
       <p className="text-[11px] text-muted mt-1.5 font-mono tabular-nums">
         {videos} videos · {delivered} delivered
