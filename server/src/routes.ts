@@ -496,6 +496,7 @@ app.post("/library/import", async (c) => {
   let resolution = parsed.data.resolution;
   let aspect = parsed.data.aspect;
   let durationSeconds = parsed.data.durationSeconds;
+  let actualDuration: number | null = null;
   if (parsed.data.mediaId) {
     const hit = getMedia(parsed.data.mediaId);
     if (!hit) return err(c, 422, "MEDIA_NOT_FOUND", "Upload the file via POST /media/upload first");
@@ -507,6 +508,7 @@ app.post("/library/import", async (c) => {
       resolution = mapped.res;
       aspect = mapped.aspect;
       durationSeconds = Math.max(1, Math.round(meta.durationSeconds));
+      actualDuration = meta.durationSeconds > 0 ? Math.round(meta.durationSeconds * 10) / 10 : null;
     } catch (e) {
       logger.error({ mediaId: parsed.data.mediaId, err: String(e) }, "import probe failed, keeping client meta");
     }
@@ -515,11 +517,11 @@ app.post("/library/import", async (c) => {
   const now = nowIso();
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
-      duration_seconds, audio, status, cost_estimate, video_url, thumb_url, inputs_json, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      duration_seconds, actual_duration_seconds, audio, status, cost_estimate, video_url, thumb_url, inputs_json, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id, parsed.data.projectId, `import-${id}`, "t2v", "import", parsed.data.prompt,
-    resolution, aspect, durationSeconds,
+    resolution, aspect, durationSeconds, actualDuration,
     parsed.data.audio ? 1 : 0, "succeeded", 0, videoUrl, parsed.data.thumbDataUrl, "{}", now, now,
   );
   logger.info({ id, projectId: parsed.data.projectId, videoUrl }, "video imported");

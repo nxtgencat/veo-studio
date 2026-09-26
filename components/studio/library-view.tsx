@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "lucide-react";
-import { ago, fmtCountdown, fmtElapsed, fullTs, money } from "@/lib/format";
+import { ago, expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureVideo } from "@/lib/media";
 import { api } from "@/lib/api";
@@ -215,7 +215,7 @@ export function LibraryView() {
                   <ModeBadge mode={v.mode} />
                 </span>
                 <SlateBadge tone="draft" className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 tabular-nums">
-                  {v.dur}s · {v.res}
+                  {fmtDurPair(expectedDur(v, (id) => project.library.find((x) => x.id === id)), v.durActual)} · {v.res}
                 </SlateBadge>
                 {v.status !== "pending" && (
                   <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" title={fullTs(v.createdAt)}>

@@ -1,4 +1,6 @@
 // Pure formatting helpers — no React, no store. DRY across views.
+import type { VideoItem } from "@/lib/schemas";
+
 export const money = (n: number) => `$${(Number(n) || 0).toFixed(2)}`;
 export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
@@ -21,6 +23,38 @@ export function fmtCountdown(etaMs?: number, elapsedMs?: number): string {
   const left = Number(etaMs) - (Number(elapsedMs) || 0);
   if (left <= 0) return "taking longer than usual";
   return fmtLeft(left);
+}
+
+/** Requested vs delivered duration: 8 → "8s", (8, 6.2) → "8s → 6.2s". ±0.5s hides probe noise. */
+export function fmtDurPair(expected: number, actual?: number | null): string {
+  const e = Number(expected) || 0;
+  if (actual == null || !(actual > 0) || Math.abs(actual - e) < 0.5) return `${e}s`;
+  const a = Number.isInteger(actual) ? String(actual) : actual.toFixed(1);
+  return `${e}s → ${a}s`;
+}
+
+/** True when the delivered file meaningfully differs from the request. */
+export function hasDurGap(expected: number, actual?: number | null): boolean {
+  return actual != null && actual > 0 && Math.abs(actual - (Number(expected) || 0)) >= 0.5;
+}
+
+type DurNode = Pick<VideoItem, "id" | "mode" | "dur" | "inputs">;
+
+/**
+ * Expected total duration. Extend chains resolve recursively (8s → 15s → 22s):
+ * old rows stored only the 7s chunk, new rows store the total — both resolve
+ * the same. Deleted source with a chunk-only row is unknowable → 7.
+ */
+export function expectedDur(
+  v: DurNode,
+  find: (id: string) => DurNode | undefined,
+  seen: Set<string> = new Set(),
+): number {
+  if (v.mode !== "extend" || seen.has(v.id)) return v.dur;
+  seen.add(v.id);
+  const src = v.inputs.extendVideo ? find(v.inputs.extendVideo) : undefined;
+  if (!src) return v.dur > 7 ? v.dur : 7;
+  return expectedDur(src, find, seen) + 7;
 }
 
 export function ago(ts: number): string {

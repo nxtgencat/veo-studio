@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { api, apiBase, authedMediaUrl, getAuthToken, onUnauthorized, setAuthToken } from "@/lib/api";
 import type { Capabilities, ServerElement, ServerJob, ServerSettings, ServerVideo } from "@/lib/api";
 import { modelOf, setCapabilities, validateGen } from "@/lib/pricing";
+import { expectedDur } from "@/lib/format";
 import { imageDims } from "@/lib/media";
 import type {
   ElementCat,
@@ -134,6 +135,7 @@ function toVideoItem(
     res: v.resolution,
     aspect: v.aspect,
     dur: v.duration_seconds,
+    durActual: v.actual_duration_seconds ?? null,
     audio: !!v.audio,
     seed: "",
     person: v.person === "disallow" ? "disallow" : "allow_adult",
@@ -173,6 +175,7 @@ function jobToVideoItem(
     res: j.resolution,
     aspect: j.aspect,
     dur: j.durationSeconds,
+    durActual: undefined,
     audio: j.audio,
     seed: typeof j.seed === "number" ? j.seed : "",
     person: j.person === "disallow" ? "disallow" : "allow_adult",
@@ -611,7 +614,7 @@ export const useStudio = create<StudioState>()((set, get) => {
           if (s) {
             base.sourceResolution = s.res;
             base.sourceAspect = s.aspect;
-            base.sourceDurationSeconds = s.dur;
+            base.sourceDurationSeconds = expectedDur(s, (id) => p.library.find((x) => x.id === id));
           }
           // Uploaded/generated files live on the server now — it resolves
           // gs:// chains and on-disk bytes itself. No raw bytes in the request.

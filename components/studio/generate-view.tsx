@@ -8,7 +8,7 @@ import {
   Volume2, VolumeX, WandSparkles, X,
 } from "lucide-react";
 import { EL_CATS, MODES } from "@/lib/catalog";
-import { fmtCountdown, fmtElapsed, money } from "@/lib/format";
+import { expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, money } from "@/lib/format";
 import { allModels, modelOf, priceFor } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
@@ -233,7 +233,7 @@ export function GenerateView() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <ModeBadge mode={v.mode} />
                       <StatusBadge status={v.status} />
-                      <SlateBadge tone="draft">{v.dur}s · {v.res}</SlateBadge>
+                      <SlateBadge tone="draft">{fmtDurPair(expectedDur(v, (id) => project.library.find((x) => x.id === id)), v.durActual)} · {v.res}</SlateBadge>
                     </div>
                     <p className="text-[13px] font-semibold leading-snug mt-1.5 break-words line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                       {v.prompt || "Untitled"}
@@ -361,7 +361,7 @@ export function GenerateView() {
                   const sel = project.library.find((v) => v.id === g.extendVideo);
                   return (
                     <SlotBox
-                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${sel.dur}s` : ""}
+                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${expectedDur(sel, (id) => project.library.find((x) => x.id === id))}s` : ""}
                       onPick={() => openPicker({ picker: "video" })}
                       onClear={() => updateActive((d) => { d.gen.extendVideo = ""; })}
                     />

@@ -135,6 +135,7 @@ export interface ServerJob {
 export interface ServerVideo {
   id: string; project_id: string; job_id: string; mode: string; model: string;
   prompt: string; resolution: string; aspect: string; duration_seconds: number;
+  actual_duration_seconds: number | null;
   audio: number; status: string; cost_estimate: number; video_url: string;
   thumb_url: string; person: string; negative_prompt: string;
   inputs_json: string; vertex_operation: string;

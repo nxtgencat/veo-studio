@@ -71,6 +71,7 @@ export function migrate(d: Database) {
       resolution TEXT NOT NULL,
       aspect TEXT NOT NULL,
       duration_seconds INTEGER NOT NULL,
+      actual_duration_seconds REAL,
       audio INTEGER NOT NULL,
       status TEXT NOT NULL,
       cost_estimate REAL NOT NULL DEFAULT 0,
@@ -119,6 +120,8 @@ export function migrate(d: Database) {
     ["jobs", "negative_prompt", "TEXT NOT NULL DEFAULT ''"],
     ["library", "person", "TEXT NOT NULL DEFAULT 'allow_adult'"],
     ["library", "negative_prompt", "TEXT NOT NULL DEFAULT ''"],
+    // Probed container duration (NULL = unknown / pre-probe row).
+    ["library", "actual_duration_seconds", "REAL"],
   ] as const) {
     const existing = d.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!existing.some((c) => c.name === column)) {

@@ -9,6 +9,7 @@ import { downloadGcsUri } from "./gcs.ts";
 import { elementImageBytes, IMAGE_MAX_BYTES } from "./images.ts";
 import { fallbackEtaMs, measuredEtaMs } from "./pricing.ts";
 import { getMedia, MEDIA_MAX_BYTES, mediaIdFromUrl, saveMedia } from "./media-store.ts";
+import { probeVideoMetadata } from "./frames.ts";
 import { estimateCost } from "./pricing.ts";
 import { validateJob, type JobInput } from "./validation.ts";
 import { childLogger } from "./logger.ts";
@@ -433,15 +434,31 @@ async function succeedJob(
   const stored = await materializeOutput(row.project_id, gs, inline);
   const now = nowIso();
   const libId = Bun.randomUUIDv7();
+  // Extend appends +7s to the source: the library row must carry the TOTAL
+  // (8s source -> 15s row, chained 15s -> 22s), not just the 7s chunk.
+  // Resolved from the DB so chains stay correct even if the client sent a
+  // stale duration. Falls back to the job chunk when the source is gone.
+  let durTotal = row.duration_seconds;
+  if (row.mode === "extend") {
+    try {
+      const inputs = JSON.parse(row.inputs_json || "{}") as { sourceVideoId?: string };
+      if (inputs.sourceVideoId) {
+        const src = db.query("SELECT duration_seconds FROM library WHERE id=?").get(inputs.sourceVideoId) as {
+          duration_seconds: number;
+        } | null;
+        if (src && Number.isFinite(src.duration_seconds)) durTotal = src.duration_seconds + 7;
+      }
+    } catch { /* keep chunk duration */ }
+  }
   db.query("UPDATE jobs SET status='succeeded', progress=100, updated_at=? WHERE id=?").run(now, jobId);
   stampDuration(jobId, row.submitted_at);
   db.query(
     `INSERT INTO library (id, project_id, job_id, mode, model, prompt, resolution, aspect,
-      duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, person, negative_prompt, inputs_json, vertex_operation, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      duration_seconds, actual_duration_seconds, audio, status, cost_estimate, video_url, gcs_uri, person, negative_prompt, inputs_json, vertex_operation, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     libId, row.project_id, jobId, row.mode, row.model, row.prompt, row.resolution, row.aspect,
-    row.duration_seconds, row.audio, "succeeded", row.cost_estimate, stored.url, gs,
+    durTotal, stored.actualDuration, row.audio, "succeeded", row.cost_estimate, stored.url, gs,
     row.person ?? "allow_adult", row.negative_prompt ?? "", row.inputs_json,
     row.vertex_operation, now, now,
   );
@@ -452,29 +469,41 @@ async function succeedJob(
 /**
  * Persist output bytes server-side so videos survive reloads, stay playable
  * and can feed Extend. Prefers the GCS object; falls back to the inline
- * payload. Never throws — archival must not fail a successful generation.
+ * payload. Probes the container (demux-only, no decode) for the DELIVERED
+ * duration — Vertex routinely returns less than requested, so requested ≠ got.
+ * Never throws — archival must not fail a successful generation.
  */
 async function materializeOutput(
   projectId: string,
   gsUri: string,
   inline?: { base64: string; mime: string },
-): Promise<{ url: string }> {
+): Promise<{ url: string; actualDuration: number | null }> {
+  const probe = async (bytes: Uint8Array, mime: string): Promise<number | null> => {
+    try {
+      const meta = await probeVideoMetadata(bytes, mime);
+      return meta.durationSeconds > 0 ? Math.round(meta.durationSeconds * 10) / 10 : null;
+    } catch {
+      return null;
+    }
+  };
   try {
     if (gsUri) {
       const token = await resolveAuth(projectId).then((a) => a.getToken());
       const { bytes, mime } = await downloadGcsUri(gsUri, token);
-      return { url: (await saveMedia(bytes, mime)).url };
+      const saved = await saveMedia(bytes, mime);
+      return { url: saved.url, actualDuration: await probe(bytes, mime) };
     }
     if (inline) {
       const raw = Uint8Array.fromBase64(inline.base64);
       if (raw.length > 0 && raw.length <= MEDIA_MAX_BYTES) {
-        return { url: (await saveMedia(raw, inline.mime)).url };
+        const saved = await saveMedia(raw, inline.mime);
+        return { url: saved.url, actualDuration: await probe(raw, inline.mime) };
       }
     }
   } catch (e: any) {
     log.error({ projectId, err: e?.message ?? String(e) }, "output archival skipped");
   }
-  return { url: gsUri };
+  return { url: gsUri, actualDuration: null };
 }
 
 function failJob(jobId: string, error: string) {

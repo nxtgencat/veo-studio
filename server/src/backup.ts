@@ -242,7 +242,7 @@ export async function restoreBackup(data: Uint8Array): Promise<RestoreReport> {
   apply(
     "library",
     "library",
-    ["id", "project_id", "job_id", "mode", "model", "prompt", "resolution", "aspect", "duration_seconds", "audio", "status", "cost_estimate", "video_url", "gcs_uri", "thumb_url", "inputs_json", "vertex_operation", "created_at", "updated_at"],
+    ["id", "project_id", "job_id", "mode", "model", "prompt", "resolution", "aspect", "duration_seconds", "actual_duration_seconds", "audio", "status", "cost_estimate", "video_url", "gcs_uri", "thumb_url", "inputs_json", "vertex_operation", "created_at", "updated_at"],
     parsed.library.map((r) => ({ gcs_uri: "", thumb_url: "", ...r })),
   );
   apply(

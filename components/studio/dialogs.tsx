@@ -7,7 +7,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { EL_CATS, YT_PRIVS } from "@/lib/catalog";
-import { ago, fmtCountdown, fmtElapsed, fullTs, money } from "@/lib/format";
+import { ago, expectedDur, fmtCountdown, fmtDurPair, fmtElapsed, fullTs, money } from "@/lib/format";
 import { modelOf } from "@/lib/pricing";
 import { captureAt, captureVideo, fileToImage, INLINE_VIDEO_MAX } from "@/lib/media";
 import { api, authedMediaUrl } from "@/lib/api";
@@ -17,7 +17,7 @@ import { useStudio } from "@/stores/use-studio";
 import { useToasts, useYtAuth } from "@/stores/use-ui";
 import { useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
-import { SlateButton, SlateCloseButton, SlateIconButton } from "@/components/slate/button";
+import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel, SlateProgress, SlateSearchField, SlateTextarea, SlateUploadCard } from "@/components/slate/core";
 import { SlateDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
@@ -229,13 +229,15 @@ function VideoPickerDialog({ close }: { close: () => void }) {
         <p className="text-[12.5px] text-muted slate-card p-4 text-center">No matches for “{q.trim()}”.</p>
       ) : (
         <div className="space-y-2 max-h-[46dvh] overflow-y-auto pr-0.5">
-          {shown.map((v) => (
+          {shown.map((v) => {
+            const exp = expectedDur(v, (id) => project.library.find((x) => x.id === id));
+            return (
             <button
               key={v.id}
               type="button"
               onClick={() => {
-                if (v.dur > 30) {
-                  push(`That video is ${v.dur}s — Extend inputs must be ≤ 30s.`, { icon: "!", tone: "danger" });
+                if (exp > 30) {
+                  push(`That video is ${exp}s — Extend inputs must be ≤ 30s.`, { icon: "!", tone: "danger" });
                   return;
                 }
                 updateActive((d) => { d.gen.extendVideo = v.id; });
@@ -249,10 +251,11 @@ function VideoPickerDialog({ close }: { close: () => void }) {
               </span>
               <span className="flex-1 min-w-0">
                 <span className="block text-[12.5px] font-semibold truncate">{(v.prompt || "Untitled").slice(0, 60)}</span>
-                <span className="block text-[11px] font-mono text-muted mt-0.5">{v.dur}s · {v.res} · {v.aspect}{v.dur > 30 ? " · too long (≤30s)" : ""}</span>
+                <span className="block text-[11px] font-mono text-muted mt-0.5">{fmtDurPair(exp, v.durActual)} · {v.res} · {v.aspect}{exp > 30 ? " · too long (≤30s)" : ""}</span>
               </span>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </SlateDialog>
@@ -333,9 +336,15 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const v = project?.library.find((x) => x.id === videoId);
   if (!project || !v) return null;
   const m = modelOf(v.model);
+  // Extend rows store the 7s chunk on old records but the TOTAL on new ones:
+  // expectedDur resolves either way (8s -> 15s -> 22s chains).
+  const srcVideo = v.mode === "extend" && v.inputs.extendVideo
+    ? project.library.find((x) => x.id === v.inputs.extendVideo)
+    : undefined;
+  const displayDur = expectedDur(v, (id) => project.library.find((x) => x.id === id));
   const cfg: [string, string][] = [
     ["Model", (v.model === "import" ? "Upload" : m.label) + (m.retires && v.model !== "import" ? " · retires Jun 30" : "")],
-    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", `${v.dur}s`],
+    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDur(srcVideo, (id) => project.library.find((x) => x.id === id)) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
     ["Audio", v.audio ? "On" : "Off"],
     ["Seed", v.seed === "" || v.seed == null ? "random" : String(v.seed)],
     ["Person", v.person === "disallow" ? "Disallow" : "Allow adults"],
@@ -363,8 +372,8 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   };
 
   const extend = () => {
-    if (v.dur > 30) {
-      push(`That video is ${v.dur}s — Extend inputs must be ≤ 30s.`, { icon: "!", tone: "danger" });
+    if (displayDur > 30) {
+      push(`That video is ${displayDur}s — Extend inputs must be ≤ 30s (cap 37s total).`, { icon: "!", tone: "danger" });
       return;
     }
     updateActive((d) => { d.gen.mode = "extend"; d.gen.extendVideo = v.id; });
@@ -398,15 +407,16 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         <>
           <ModeBadge mode={v.mode} />
           <StatusBadge status={v.status} />
-          <SlateBadge tone="draft">{v.dur}s · {v.res} · {v.aspect}</SlateBadge>
+          <SlateBadge tone="draft">{fmtDurPair(displayDur, v.durActual)} · {v.res} · {v.aspect}</SlateBadge>
           <SlateCloseButton onClick={close} />
         </>
       }
       footer={
-        <>
+        <div className="flex flex-wrap items-center gap-2 w-full">
           <span className="font-display font-bold text-[17px] tabular-nums mr-auto" title={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
             {v.status === "failed" ? <s>{money(v.cost)}</s> : `${money(v.cost)}${v.status === "pending" ? " est." : ""}`}
           </span>
+          <div className="flex flex-wrap items-center justify-end gap-2 max-w-full">
           {v.status === "success" && (
             <>
               <SlateDropdown
@@ -449,11 +459,12 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
               <Trash2 className="size-3.5" /> Dismiss
             </SlateButton>
           ) : (
-            <SlateIconButton variant="quiet" size="icon-sm" label="Delete video" onClick={() => set({ confirmDel: v.id })}>
-              <Trash2 className="size-3.5" />
-            </SlateIconButton>
+            <SlateButton variant="ghost" size="sm" onClick={() => set({ confirmDel: v.id })} title="Delete this video">
+              <Trash2 className="size-3.5" /> Delete
+            </SlateButton>
           )}
-        </>
+          </div>
+        </div>
       }
     >
       {v.status === "success" && v.url ? (
@@ -503,13 +514,23 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
             <p className="text-[13px] leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>{v.negativePrompt}</p>
           </div>
         )}
-        {v.mode === "i2v" && v.inputs.image && (
+        {v.mode === "t2v" && (
+          <div>
+            <p className="slate-lbl">Inputs</p>
+            <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>Text only — no reference images or source video.</p>
+          </div>
+        )}
+        {v.mode === "i2v" && (
           <div>
             <p className="slate-lbl">Source image</p>
-            <div className="rounded-[10px] overflow-hidden border slate-hair h-[120px] bg-surface2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={v.inputs.image} className="w-full h-full object-cover" alt="source" />
-            </div>
+            {v.inputs.image ? (
+              <div className="rounded-[10px] overflow-hidden border slate-hair h-[120px] bg-surface2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={v.inputs.image} className="w-full h-full object-cover" alt="source" />
+              </div>
+            ) : (
+              <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>Source image deleted or unavailable — reload needs a new still.</p>
+            )}
           </div>
         )}
         {v.mode === "frames" && (
@@ -517,10 +538,12 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
             {(["first", "last"] as const).map((k) => (
               <div key={k}>
                 <p className="slate-lbl">{k === "first" ? "First frame" : "Last frame"}</p>
-                <div className="rounded-[10px] overflow-hidden border slate-hair h-[110px] bg-surface2">
-                  {v.inputs[k] && (
+                <div className="rounded-[10px] overflow-hidden border slate-hair h-[110px] bg-surface2 grid place-items-center">
+                  {v.inputs[k] ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={v.inputs[k]} className="w-full h-full object-cover" alt={k} />
+                  ) : (
+                    <span className="text-[11.5px] text-muted px-2 text-center">Deleted or unavailable</span>
                   )}
                 </div>
               </div>
@@ -530,14 +553,49 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
         {v.mode === "r2v" && (
           <div>
             <p className="slate-lbl">Reference images ({(v.inputs.refs || []).length}/3)</p>
-            <div className="grid grid-cols-3 gap-2">
-              {(v.inputs.refs || []).map((r, i) => (
-                <div key={i} className="rounded-[10px] overflow-hidden border slate-hair aspect-square bg-surface2">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={r} className="w-full h-full object-cover" alt="ref" />
-                </div>
-              ))}
-            </div>
+            {(v.inputs.refs || []).length ? (
+              <div className="grid grid-cols-3 gap-2">
+                {(v.inputs.refs || []).map((r, i) => (
+                  <div key={i} className="rounded-[10px] overflow-hidden border slate-hair aspect-square bg-surface2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={r} className="w-full h-full object-cover" alt="ref" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>Reference images deleted or unavailable — reload needs new stills.</p>
+            )}
+          </div>
+        )}
+        {v.mode === "extend" && (
+          <div>
+            <p className="slate-lbl">Source video (+7s continuation · {displayDur}s total)</p>
+            {srcVideo ? (
+              <button
+                type="button"
+                onClick={() => set({ video: srcVideo.id })}
+                className="w-full text-left slate-card p-2 flex items-center gap-2.5 hover:border-[#3FA96D]"
+                style={{ background: "var(--surface-2)" }}
+                title="Open source video"
+              >
+                <span className="w-24 aspect-video rounded-[7px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative grid place-items-center">
+                  {srcVideo.thumb ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={srcVideo.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" />
+                  ) : (
+                    <span className="text-[11px] text-muted">{srcVideo.dur}s</span>
+                  )}
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[12.5px] font-semibold truncate">{(srcVideo.prompt || "Untitled").slice(0, 60)}</span>
+                  <span className="block text-[11px] font-mono text-muted mt-0.5">{srcVideo.dur}s · {srcVideo.res} · {srcVideo.aspect} → +7s = {displayDur}s</span>
+                </span>
+              </button>
+            ) : v.inputs.extendVideo ? (
+              <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>Source video deleted — this clip keeps its {displayDur}s output but can&apos;t chain further from the original.</p>
+            ) : (
+              <p className="text-[12.5px] text-muted leading-relaxed slate-card p-3" style={{ background: "var(--surface-2)" }}>No source linked (old record) — output adds +7s to its original clip.</p>
+            )}
           </div>
         )}
         {v.youtube?.videoId && (
@@ -783,9 +841,9 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
               {info.processingStatus === "succeeded" ? "Live" : info.processingStatus === "failed" ? "Failed" : info.processingStatus === "terminated" ? "Terminated" : info.processingStatus === "processing" ? "Processing" : "Uploaded"}
             </SlateBadge>
             <a className="text-[12.5px] font-mono text-[#1C7247] truncate" href={info.url} target="_blank" rel="noopener noreferrer">{info.url}</a>
-            <SlateIconButton variant="quiet" size="icon-sm" label="Refresh status & views" onClick={refresh} className="!w-8 ml-auto">
-              <RefreshCw className="size-3.5" />
-            </SlateIconButton>
+            <SlateButton variant="ghost" size="sm" onClick={refresh} title="Refresh status & views" className="ml-auto">
+              <RefreshCw className="size-3.5" /> Refresh
+            </SlateButton>
           </div>
           <div className="mt-2 flex items-center gap-3 text-[12px] text-fg2 flex-wrap">
             <span className="tabular-nums"><span className="font-bold text-fg">{info.views != null ? Number(info.views).toLocaleString() : "—"}</span> views</span>
