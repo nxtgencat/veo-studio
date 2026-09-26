@@ -98,7 +98,7 @@ function SlateToastList() {
           <div className="flex min-w-0 flex-1 flex-col justify-center">
             <ToastPrimitive.Title
               data-slot="toast-title"
-              className="text-[13px] font-semibold leading-snug truncate"
+              className="text-[13px] font-semibold leading-snug line-clamp-2"
             />
             <ToastPrimitive.Description
               data-slot="toast-description"

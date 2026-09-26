@@ -27,6 +27,7 @@ export type Driver = {
     error?: string;
     videoUris: string[];
     videoBytes?: { base64: string; mime: string };
+    responseKeys?: string[];
   }>;
   cancel: (name: string) => Promise<{ cancelled: boolean; alreadyDone: boolean }>;
 };
@@ -389,7 +390,7 @@ async function pollUntilDone(jobId: string, opName: string, d: Driver) {
       notFoundStreak = 0;
       if (op.done) {
         if (op.error) failJob(jobId, op.error);
-        else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes);
+        else await succeedJob(jobId, op.videoUris ?? [], op.videoBytes, op.responseKeys);
         return;
       }
     } catch (e: any) {
@@ -424,6 +425,7 @@ async function succeedJob(
   jobId: string,
   videoUris: string[] = [],
   inline?: { base64: string; mime: string },
+  responseKeys?: string[],
 ) {
   const db = getDb();
   const row = db.query("SELECT * FROM jobs WHERE id=?").get(jobId) as any;
@@ -432,7 +434,13 @@ async function succeedJob(
   // are synchronous back-to-back, so pollers never observe succeeded-without-
   // a-row (the vanish gap). Archival stays best-effort, never fails the job.
   const gs = videoUris.find((u) => u.startsWith("gs://")) ?? "";
-  const stored = await materializeOutput(row.project_id, gs, inline);
+  const https = videoUris.filter((u) => u.startsWith("https://"));
+  const stored = await materializeOutput(row.project_id, gs, https, inline);
+  if (!stored.url) {
+    // Vertex said done but gave nothing downloadable — log the shape so the
+    // next miss is diagnosable instead of another silent metadata-only row.
+    log.error({ jobId, mode: row.mode, model: row.model, responseKeys: responseKeys ?? [], uriCount: videoUris.length, hasInline: !!inline }, "vertex done without downloadable output");
+  }
   const now = nowIso();
   const libId = Bun.randomUUIDv7();  // Extend appends +7s to the source: the library row must carry the TOTAL
   // (8s source -> 15s row, chained 15s -> 22s), not just the 7s chunk.
@@ -477,6 +485,7 @@ async function succeedJob(
 async function materializeOutput(
   projectId: string,
   gsUri: string,
+  httpsUris: string[],
   inline?: { base64: string; mime: string },
 ): Promise<{ url: string; actualDuration: number | null }> {
   const probe = async (bytes: Uint8Array, mime: string): Promise<number | null> => {
@@ -487,12 +496,33 @@ async function materializeOutput(
       return null;
     }
   };
+  // Bearer-download an https output URL (storage download links need it;
+  // signed URLs simply ignore the header).
+  const fetchHttps = async (url: string): Promise<{ bytes: Uint8Array; mime: string } | null> => {
+    try {
+      const token = await resolveAuth(projectId).then((a) => a.getToken());
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!bytes.length || bytes.length > MEDIA_MAX_BYTES) return null;
+      return { bytes, mime: res.headers.get("content-type")?.split(";")[0]?.trim() || "video/mp4" };
+    } catch {
+      return null;
+    }
+  };
   try {
     if (gsUri) {
       const token = await resolveAuth(projectId).then((a) => a.getToken());
       const { bytes, mime } = await downloadGcsUri(gsUri, token);
       const saved = await saveMedia(bytes, mime);
       return { url: saved.url, actualDuration: await probe(bytes, mime) };
+    }
+    for (const url of httpsUris.slice(0, 4)) {
+      const hit = await fetchHttps(url);
+      if (hit) {
+        const saved = await saveMedia(hit.bytes, hit.mime);
+        return { url: saved.url, actualDuration: await probe(hit.bytes, hit.mime) };
+      }
     }
     if (inline) {
       const raw = Uint8Array.fromBase64(inline.base64);

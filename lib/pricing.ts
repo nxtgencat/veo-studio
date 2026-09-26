@@ -3,6 +3,7 @@
 // studio store during hydrate. No mock data anywhere in this file.
 import type { Capabilities } from "@/lib/api";
 import type { Project, VideoItem } from "@/lib/schemas";
+import { expectedDur } from "@/lib/format";
 
 let CAPS: Capabilities | null = null;
 
@@ -103,25 +104,31 @@ export function validateGen(
   lib: VideoItem[],
 ): string | null {
   if (!g.prompt.trim()) return "Write a prompt first.";
-  // Slots are mutually exclusive — flag stale inputs carried over from another mode.
+  // Slots are mutually exclusive — flag stale inputs carried over from another mode,
+  // naming exactly what's in the way so the fix is obvious.
   const hasImage = !!g.image;
   const hasFrames = !!g.first || !!g.last;
   const hasRefs = g.refs.filter(Boolean).length > 0;
   const hasVideo = !!g.extendVideo;
-  if (g.mode === "t2v" && (hasImage || hasFrames || hasRefs || hasVideo)) {
-    return "Text mode takes a prompt only — clear the image/frame/reference/video slots first.";
-  }
+  const extras: string[] = [
+    hasImage && "image",
+    hasFrames && "frames",
+    hasRefs && "references",
+    hasVideo && "source video",
+  ].filter(Boolean) as string[];
+  const need = (want: string) => `${want} — remove ${extras.join(", ")} first.`;
+  if (g.mode === "t2v" && extras.length) return need("Text mode needs just a prompt");
   if (g.mode === "i2v" && (hasFrames || hasRefs || hasVideo)) {
-    return "Image mode takes one still — clear the frames/reference/video slots first.";
+    return need("Image mode needs only its still");
   }
   if (g.mode === "frames" && (hasImage || hasRefs || hasVideo)) {
-    return "Frames mode takes first + last only — clear the image/reference/video slots first.";
+    return need("Frames mode needs only first + last");
   }
   if (g.mode === "r2v" && (hasImage || hasFrames || hasVideo)) {
-    return "Reference mode takes references only — clear the image/frame/video slots first.";
+    return need("Reference mode needs only references");
   }
   if (g.mode === "extend" && (hasImage || hasFrames || hasRefs)) {
-    return "Extend takes a source video only — clear the image/frame/reference slots first.";
+    return need("Extend needs only its source video");
   }
   if (g.mode === "i2v" && !g.image) return "Image mode needs 1 image.";
   if (g.mode === "frames" && (!g.first || !g.last)) return "Frames mode needs first + last frame.";
@@ -134,7 +141,8 @@ export function validateGen(
     if (!g.extendVideo) return "Pick a source video.";
     const s = lib.find((x) => x.id === g.extendVideo);
     if (!s) return "Source video is gone — pick another.";
-    if (s.dur > 30) return `Source is ${s.dur}s — Extend inputs must be ≤ 30s.`;
+    const total = expectedDur(s, (id) => lib.find((x) => x.id === id));
+    if (total > 30) return `Source is ${total}s — Extend inputs must be ≤ 30s.`;
   }
   if (g.mode === "frames" && !m.flf) return `${m.label} has no frames mode.`;
   return null;

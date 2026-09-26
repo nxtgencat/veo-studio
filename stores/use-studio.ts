@@ -530,6 +530,17 @@ export const useStudio = create<StudioState>()((set, get) => {
         gen: { ...current.gen, refs: [...(current.gen.refs || [])] },
       };
       fn(draft);
+      // Mode switch drops other modes' slots: they're invisible in the
+      // composer, so stale values must never block the next Generate.
+      if (draft.gen.mode !== current.gen.mode) {
+        if (draft.gen.mode !== "i2v") draft.gen.image = "";
+        if (draft.gen.mode !== "frames") {
+          draft.gen.first = "";
+          draft.gen.last = "";
+        }
+        if (draft.gen.mode !== "r2v") draft.gen.refs = [];
+        if (draft.gen.mode !== "extend") draft.gen.extendVideo = "";
+      }
       const m = modelOf(draft.gen.model);
       const resList = m.res;
       const durList = m.dur;
@@ -641,6 +652,15 @@ export const useStudio = create<StudioState>()((set, get) => {
           count++;
         }
         await get().refreshActive();
+        // Fresh composer for the next shot: clear prompt + inputs, keep config.
+        get().updateActive((d) => {
+          d.gen.prompt = "";
+          d.gen.image = "";
+          d.gen.first = "";
+          d.gen.last = "";
+          d.gen.refs = [];
+          d.gen.extendVideo = "";
+        });
         return { ok: true, count };
       } catch (e) {
         return { ok: false, error: errOf(e) };

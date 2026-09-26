@@ -49,6 +49,8 @@ export type VertexOperation = {
   videoUris: string[];
   /** First inline payload found (no-bucket outputs), capped — may be absent. */
   videoBytes?: { base64: string; mime: string };
+  /** Top-level response keys (diagnostics for unrecognized shapes). */
+  responseKeys?: string[];
 };
 
 export const INLINE_RESPONSE_MAX = 100 * 1024 * 1024;
@@ -134,21 +136,30 @@ export async function vertexSubmit(params: VertexSubmitParams, ctx: VertexCtx): 
 /** Defensively collect output video URIs (gs:// or https) from an LRO payload. */
 export function collectVideoUris(payload: unknown): string[] {
   const out = new Set<string>();
-  const walk = (v: unknown, depth: number) => {
+  const walk = (v: unknown, depth: number, key: string) => {
     if (out.size >= 16 || depth > 8) return;
     if (typeof v === "string") {
-      if (v.startsWith("gs://") || /^https?:\/\/\S+\.mp4(\?\S*)?$/.test(v)) out.add(v);
+      if (v.startsWith("gs://")) out.add(v);
+      // https outputs don't always end in .mp4 (e.g. storage.googleapis.com
+      // download URLs) — trust them when the FIELD looks like a URI, not any
+      // random link in the payload.
+      else if (
+        v.startsWith("https://") &&
+        (/uri|url/i.test(key) || /^https?:\/\/\S+\.mp4(\?\S*)?$/.test(v))
+      ) {
+        out.add(v);
+      }
       return;
     }
     if (Array.isArray(v)) {
-      for (const x of v) walk(x, depth + 1);
+      for (const x of v) walk(x, depth + 1, key);
       return;
     }
     if (v && typeof v === "object") {
-      for (const x of Object.values(v as Record<string, unknown>)) walk(x, depth + 1);
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) walk(x, depth + 1, k);
     }
   };
-  walk(payload, 0);
+  walk(payload, 0, "");
   return [...out];
 }
 
@@ -204,12 +215,17 @@ export async function vertexFetchOp(
   const json = (await res.json()) as { name?: string; done?: boolean; error?: { message?: string }; response?: unknown };
   const uris = json.done ? collectVideoUris(json.response) : [];
   const inline = json.done ? collectVideoBytes(json.response) : null;
+  const responseKeys =
+    json.done && json.response && typeof json.response === "object" && !Array.isArray(json.response)
+      ? Object.keys(json.response as Record<string, unknown>).slice(0, 12)
+      : [];
   return {
     name: json.name ?? opName,
     done: !!json.done,
     error: json.error?.message,
     videoUris: uris,
     ...(inline ? { videoBytes: inline } : {}),
+    responseKeys,
   };
 }
 
