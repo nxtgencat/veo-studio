@@ -21,6 +21,7 @@ export const jobInputSchema = z.object({
   seed: z.number().int().min(0).max(4294967295).optional(),
   person: z.enum(["allow_adult", "disallow"]).optional(),
   negativePrompt: z.string().max(2000).optional(),
+  enhancePrompt: z.boolean().optional(),
   imageAssetId: z.string().optional(),
   firstFrameAssetId: z.string().optional(),
   lastFrameAssetId: z.string().optional(),

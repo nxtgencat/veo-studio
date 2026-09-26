@@ -97,6 +97,7 @@ interface RawInputs {
   lastFrameAssetId?: string;
   refAssetIds?: string[];
   sourceVideoId?: string;
+  enhancePrompt?: boolean;
 }
 
 function mapInputs(raw: RawInputs, elements: ServerElement[]): VideoItem["inputs"] {
@@ -124,8 +125,9 @@ function toVideoItem(
   elements: ServerElement[],
   youtube: Record<string, NonNullable<VideoItem["youtube"]>>,
 ): VideoItem {
+  const raw = parseRawInputs(v.inputs_json);
   let inputs: VideoItem["inputs"] = {};
-  inputs = mapInputs(parseRawInputs(v.inputs_json), elements);
+  inputs = mapInputs(raw, elements);
   return {
     id: v.id,
     jobId: v.job_id,
@@ -140,7 +142,7 @@ function toVideoItem(
     audio: !!v.audio,
     seed: "",
     person: v.person === "disallow" ? "disallow" : "allow_adult",
-    enhance: false,
+    enhance: raw.enhancePrompt ?? true,
     batch: 1,
     status: "success",
     progress: 100,
@@ -166,7 +168,8 @@ function jobToVideoItem(
   j: ServerJob,
   elements: ServerElement[],
 ): VideoItem {
-  const inputs = mapInputs(parseRawInputs(j.inputsJson ?? "{}"), elements);
+  const raw = parseRawInputs(j.inputsJson ?? "{}");
+  const inputs = mapInputs(raw, elements);
   return {
     id: j.id,
     jobId: j.id,
@@ -181,7 +184,7 @@ function jobToVideoItem(
     audio: j.audio,
     seed: typeof j.seed === "number" ? j.seed : "",
     person: j.person === "disallow" ? "disallow" : "allow_adult",
-    enhance: false,
+    enhance: raw.enhancePrompt ?? true,
     batch: 1,
     negativePrompt: j.negativePrompt || undefined,
     elapsedMs: j.elapsedMs ?? 0,
@@ -217,6 +220,8 @@ interface StudioState {
   hydrated: boolean;
   refreshing: boolean;
   authRequired: boolean;
+  /** Server-side account totals (all projects, even never-opened ones). */
+  totals: { projects: number; videos: number; delivered: number; spend: number } | null;
   login: (password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   serverSettings: (projectId: string) => ServerSettings | undefined;
@@ -311,11 +316,12 @@ export const useStudio = create<StudioState>()((set, get) => {
     e instanceof Error ? e.message : String(e ?? "Request failed");
 
   async function fetchScope(projectId: string) {
-    const [els, libs, jobs, cfgResp] = await Promise.all([
+    const [els, libs, jobs, cfgResp, totals] = await Promise.all([
       api.listElements(projectId),
       api.listLibrary(projectId),
       api.listJobs(projectId),
       api.getSettings(projectId),
+      api.stats().catch(() => null),
     ]);
     const s = get();
     const prevCfg = s.srvSettings[projectId];
@@ -328,6 +334,7 @@ export const useStudio = create<StudioState>()((set, get) => {
       library: [...s.library.filter((v) => v.project_id !== projectId), ...libs.videos],
       jobs: [...s.jobs.filter((j) => j.projectId !== projectId), ...jobs.jobs],
       srvSettings: { ...s.srvSettings, [projectId]: cfg },
+      ...(totals ? { totals } : {}),
     });
     loaded.add(projectId);
     rebuild({});
@@ -384,6 +391,7 @@ export const useStudio = create<StudioState>()((set, get) => {
         createdAt: Date.parse(p.created_at) || Date.now(),
       }));
       set({ caps, capsReady: true, srvProjects: srv, serverUp: true, lastError: "" });
+      void api.stats().then((t) => set({ totals: t })).catch(() => {});
       // Never auto-create: an empty server means the empty state (Home offers
       // "Create project"). Auto-creating here raced under concurrent hydrates
       // and littered untitled projects.
@@ -414,6 +422,7 @@ export const useStudio = create<StudioState>()((set, get) => {
     hydrated: false,
     refreshing: false,
     authRequired: false,
+    totals: null,
 
     login: async (password: string) => {
       setAuthToken(password);
@@ -596,6 +605,7 @@ export const useStudio = create<StudioState>()((set, get) => {
           audio,
           sampleCount: 1,
           person: g.person,
+          enhancePrompt: g.enhance,
           ...(g.negativePrompt.trim() ? { negativePrompt: g.negativePrompt.trim().slice(0, 2000) } : {}),
           ...(seed != null && !Number.isNaN(seed) ? { seed } : {}),
         };
@@ -779,7 +789,7 @@ export const useStudio = create<StudioState>()((set, get) => {
         batch: 1,
         seed: v.seed ?? "",
         person: v.person === "disallow" ? "disallow" : "allow_adult",
-        enhance: true,
+        enhance: v.enhance,
         negativePrompt: v.negativePrompt ?? "",
         prompt: v.prompt,
         image: wantImage ? need("image", v.inputs.image) : "",

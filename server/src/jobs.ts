@@ -117,6 +117,7 @@ export function createJob(input: JobInput, idempotencyKey: string): CreateResult
     sourceVideoGcsUri: input.sourceVideoGcsUri,
     hasSourceVideoBytes: !!input.sourceVideoBytes,
     seed: input.seed,
+    enhancePrompt: input.enhancePrompt ?? true,
   };
   db.query(
     `INSERT INTO jobs (id, project_id, idempotency_key, mode, model, prompt, resolution, aspect,
@@ -175,6 +176,7 @@ async function runInBackground(jobId: string, resumeOp?: string) {
       seed: row.seed ?? undefined,
       person: row.person === "disallow" ? "disallow" : "allow_adult",
       negativePrompt: row.negative_prompt ?? undefined,
+      enhancePrompt: (JSON.parse(row.inputs_json || "{}") as { enhancePrompt?: boolean }).enhancePrompt ?? true,
     };
     const settings = getSettings(row.project_id);
     if (settings.useBucket && settings.bucket) {

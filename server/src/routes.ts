@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { isAuthorized, isAuthorizedMedia, passwordRequired } from "./access.ts";
+import { uniqueSlug } from "./slug.ts";
 import { getDb, nowIso } from "./db.ts";
 import { getSettings, parseSaJson, saAccessToken, saveSettings, type SaCreds } from "./auth.ts";
 import { checkBucket } from "./gcs.ts";
@@ -70,10 +71,20 @@ app.get("/auth/status", (c) => c.json({ required: passwordRequired() }));
 app.post("/projects", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Untitled project";
-  const id = Bun.randomUUIDv7();
-  const now = nowIso();
-  getDb().query("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?,?,?,?)").run(id, name, now, now);
-  return c.json({ id, name, createdAt: now }, 201);
+  const db = getDb();
+  // Check-then-insert can race under concurrent creates — retry on PK clash.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = uniqueSlug(name, (s) => !!db.query("SELECT id FROM projects WHERE id=?").get(s));
+    try {
+      const now = nowIso();
+      db.query("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?,?,?,?)").run(id, name, now, now);
+      return c.json({ id, name, createdAt: now }, 201);
+    } catch (e: any) {
+      const code = String(e?.code ?? "");
+      if (!code.startsWith("SQLITE_CONSTRAINT")) throw e;
+    }
+  }
+  return c.json({ error: { code: "SLUG_EXHAUSTED", message: "Could not pick a unique project id — try again" } }, 503);
 });
 
 app.get("/projects", (c) => {
@@ -435,6 +446,17 @@ app.get("/media/:id", (c) => {
   return new Response(file as unknown as Blob, {
     headers: { "Content-Type": hit.mime, "Content-Length": String(size), "Accept-Ranges": "bytes" },
   });
+});
+
+// ---------- account totals (sidebar: spans projects the client never opened) ----------
+app.get("/stats", (c) => {
+  const db = getDb();
+  const lib = db.query(
+    "SELECT COUNT(*) AS videos, COALESCE(SUM(cost_estimate), 0) AS spend FROM library WHERE status='succeeded'",
+  ).get() as { videos: number; spend: number };
+  const projs = db.query("SELECT COUNT(*) AS n FROM projects").get() as { n: number };
+  const spend = Math.round(lib.spend * 100) / 100;
+  return c.json({ projects: projs.n, videos: lib.videos, delivered: lib.videos, spend });
 });
 
 // ---------- library ----------

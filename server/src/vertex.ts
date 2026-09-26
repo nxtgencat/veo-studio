@@ -23,6 +23,8 @@ export type VertexSubmitParams = {
   seed?: number;
   person?: "allow_adult" | "disallow";
   negativePrompt?: string;
+  /** Prompt rewriting (Veo "enhance prompt") — default on. */
+  enhancePrompt?: boolean;
   /** First-frame still (i2v, or the start of an f2v pair). */
   imageBytes?: string;
   imageMimeType?: string;
@@ -106,6 +108,7 @@ export async function vertexSubmit(params: VertexSubmitParams, ctx: VertexCtx): 
   // Collected in the composer but previously never sent — now wired.
   parameters.personGeneration = params.person ?? "allow_adult";
   if (params.negativePrompt?.trim()) parameters.negativePrompt = params.negativePrompt.trim().slice(0, 2000);
+  if (params.enhancePrompt != null) parameters.enhancePrompt = params.enhancePrompt;
   // generateAudio is accepted on Veo 3.1; Veo 2 ignores it (we block audio upstream).
   parameters.generateAudio = params.audio;
   if (params.storageUri) parameters.storageUri = params.storageUri;

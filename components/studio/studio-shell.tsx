@@ -28,9 +28,11 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
     (params.projectId ? projects.find((x) => x.id === params.projectId) : undefined) ?? storeActive;
 
   const totalPending = projects.reduce((a, q) => a + pendingOf(q), 0);
-  const totalSpend = projects.reduce((a, q) => a + spendOf(q), 0);
-  const totalVideos = projects.reduce((a, q) => a + q.library.length, 0);
-  const totalDelivered = projects.reduce(
+  const totals = useStudio((s) => s.totals);
+  // Server truth spans never-opened projects; fall back to loaded ones first paint.
+  const totalSpend = totals?.spend ?? projects.reduce((a, q) => a + spendOf(q), 0);
+  const totalVideos = totals?.videos ?? projects.reduce((a, q) => a + q.library.length, 0);
+  const totalDelivered = totals?.delivered ?? projects.reduce(
     (a, q) => a + q.library.filter((v) => v.status === "success").length, 0,
   );
   const firstRunning = projects.find((x) => pendingOf(x) > 0);

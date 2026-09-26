@@ -172,6 +172,8 @@ export const api = {
 
   capabilities: () => req<Capabilities>("/models/capabilities"),
 
+  stats: () => req<{ projects: number; videos: number; delivered: number; spend: number }>("/stats"),
+
   listProjects: () => req<{ projects: ServerProject[] }>("/projects"),
   createProject: (name: string) =>
     req<ServerProject>("/projects", { method: "POST", body: JSON.stringify({ name }) }),
