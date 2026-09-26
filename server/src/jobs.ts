@@ -175,7 +175,7 @@ async function runInBackground(jobId: string, resumeOp?: string) {
       audio: !!row.audio,
       sampleCount: row.sample_count,
       seed: row.seed ?? undefined,
-      person: row.person === "disallow" ? "disallow" : "allow_adult",
+      person: row.person === "dont_allow" ? "dont_allow" : "allow_adult",
       negativePrompt: row.negative_prompt ?? undefined,
       enhancePrompt: (JSON.parse(row.inputs_json || "{}") as { enhancePrompt?: boolean }).enhancePrompt ?? true,
     };

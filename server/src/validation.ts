@@ -19,7 +19,7 @@ export const jobInputSchema = z.object({
   audio: z.boolean().default(true),
   sampleCount: z.number().int().min(1).max(4).default(1),
   seed: z.number().int().min(0).max(4294967295).optional(),
-  person: z.enum(["allow_adult", "disallow"]).optional(),
+  person: z.enum(["allow_adult", "dont_allow"]).optional(),
   negativePrompt: z.string().max(2000).optional(),
   enhancePrompt: z.boolean().optional(),
   imageAssetId: z.string().optional(),

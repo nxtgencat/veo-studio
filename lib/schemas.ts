@@ -15,7 +15,7 @@ export const genDraftSchema = z.object({
   audio: z.boolean(),
   batch: z.number().int().min(1).max(4),
   seed: z.union([z.string(), z.number()]),
-  person: z.enum(["allow_adult", "disallow"]),
+  person: z.enum(["allow_adult", "dont_allow"]),
   enhance: z.boolean(),
   negativePrompt: z.string().max(2000).default(""),
   prompt: z.string().max(5000),
@@ -151,7 +151,7 @@ export const elementFormSchema = z.object({
 });
 export const advancedFormSchema = z.object({
   seed: z.union([z.string(), z.number()]),
-  person: z.enum(["allow_adult", "disallow"]),
+  person: z.enum(["allow_adult", "dont_allow"]),
   negativePrompt: z.string().max(2000).default(""),
 });
 export const ytPublishSchema = z.object({

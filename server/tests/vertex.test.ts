@@ -23,14 +23,14 @@ describe("vertex fetch", () => {
           durationSeconds: 8,
           audio: true,
           sampleCount: 1,
-          person: "disallow",
+          person: "dont_allow",
           negativePrompt: "blurry",
         },
         ctx,
       );
       const body = JSON.parse(seenBody) as { parameters: Record<string, unknown> };
       expect(body.parameters.resolution).toBe("4k");
-      expect(body.parameters.personGeneration).toBe("disallow");
+      expect(body.parameters.personGeneration).toBe("dont_allow");
       expect(body.parameters.negativePrompt).toBe("blurry");
     } finally {
       (globalThis as any).fetch = orig;

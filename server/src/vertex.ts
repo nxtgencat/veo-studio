@@ -21,7 +21,7 @@ export type VertexSubmitParams = {
   audio: boolean;
   sampleCount: number;
   seed?: number;
-  person?: "allow_adult" | "disallow";
+  person?: "allow_adult" | "dont_allow";
   negativePrompt?: string;
   /** Prompt rewriting (Veo "enhance prompt") — default on. */
   enhancePrompt?: boolean;

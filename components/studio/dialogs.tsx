@@ -268,8 +268,8 @@ function AdvancedDialog({ close }: { close: () => void }) {
   const updateActive = useStudio((s) => s.updateActive);
   const push = useToasts((s) => s.push);
   const [seed, setSeed] = useState<string | number>(project?.gen.seed ?? "");
-  const [person, setPerson] = useState<"allow_adult" | "disallow">(
-    project?.gen.person === "disallow" ? "disallow" : "allow_adult",
+  const [person, setPerson] = useState<"allow_adult" | "dont_allow">(
+    project?.gen.person === "dont_allow" ? "dont_allow" : "allow_adult",
   );
   const [negative, setNegative] = useState(project?.gen.negativePrompt ?? "");
   if (!project) return null;
@@ -284,13 +284,13 @@ function AdvancedDialog({ close }: { close: () => void }) {
         <div>
           <SlateLabel>Person generation</SlateLabel>
           <SlateDropdown
-            label={person === "allow_adult" ? "Adults — allow" : "None — disallow"}
+            label={person === "allow_adult" ? "Adults — allow" : "None — no people"}
             btnClassName="slate-field w-full flex items-center gap-1 !text-[13px] font-semibold"
             menu={(c) => [
               ["allow_adult", "Adults — allow generation"],
-              ["disallow", "None — no people or faces"],
+              ["dont_allow", "None — no people or faces"],
             ].map(([v, l]) => (
-              <SlateOption key={v} active={person === v} onPick={() => setPerson(v as "allow_adult" | "disallow")} onClose={c}>
+              <SlateOption key={v} active={person === v} onPick={() => setPerson(v as "allow_adult" | "dont_allow")} onClose={c}>
                 {l}
               </SlateOption>
             ))}
@@ -348,7 +348,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     ["Size", fmtBytes(v.size)],
     ["Audio", v.audio ? "On" : "Off"],
     ["Seed", v.seed === "" || v.seed == null ? "random" : String(v.seed)],
-    ["Person", v.person === "disallow" ? "Disallow" : "Allow adults"],
+    ["Person", v.person === "dont_allow" ? "No people" : "Allow adults"],
     ["Enhance", v.enhance ? "On" : "Off"], ["Batch", String(v.batch || 1)],
   ];
 
