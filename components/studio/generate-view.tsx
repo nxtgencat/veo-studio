@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
-  ArrowRight, Check, ChevronDown, CircleX, ImagePlus, Play, SlidersHorizontal, Sparkles, TriangleAlert,
+  ArrowRight, Check, ChevronDown, CircleX, ImagePlus, Loader2, Play, SlidersHorizontal, Sparkles, TriangleAlert,
   Volume2, VolumeX, WandSparkles, X,
 } from "lucide-react";
 import { EL_CATS, MODES } from "@/lib/catalog";
@@ -79,6 +79,7 @@ export function GenerateView() {
   const { set } = useQueryState({ video: "", youtube: "", picker: "", refIndex: "", advanced: "" });
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const [mention, setMention] = useState<{ q: string; start: number; pos: number } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const g = project?.gen;
   const m = useMemo(() => modelOf(g?.model ?? ""), [g?.model]);
@@ -154,10 +155,16 @@ export function GenerateView() {
   };
 
   const submit = () => {
+    if (submitting) return;
     setMention(null);
+    setSubmitting(true);
     void queueGeneration().then((r) => {
+      setSubmitting(false);
       if (!r.ok) pushErr(r.error ?? "Cannot generate");
-      else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "✦", detail: `${m.label} · ${g.res} · ${g.dur}s` });
+      else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "sparkles", detail: `${m.label} · ${g.res} · ${g.dur}s` });
+    }).catch((e) => {
+      setSubmitting(false);
+      pushErr(e instanceof Error ? e.message : "Cannot generate");
     });
   };
 
@@ -456,8 +463,9 @@ export function GenerateView() {
                 >
                   <WandSparkles className="size-4" />
                 </SlateIconButton>
-                <SlateButton variant="primary" className="flex-1 !h-[38px]" disabled={price == null} onClick={submit} aria-label="Generate">
-                  <Sparkles className="size-4" /> Generate <span className="tabular-nums">{price != null ? money(price) : "—"}</span>
+                <SlateButton variant="primary" className="flex-1 !h-[38px]" disabled={price == null || submitting} onClick={submit} aria-label="Generate">
+                  {submitting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{" "}
+                  {submitting ? "Queuing…" : <>Generate <span className="tabular-nums">{price != null ? money(price) : "—"}</span></>}
                 </SlateButton>
               </div>
             </div>

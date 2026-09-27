@@ -206,7 +206,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
                     : tooBig
                       ? "Imported and selected — file is over 20MB, extend needs a GCS source for it"
                       : "Imported and selected as extend source",
-                { icon: "✓" },
+                { icon: "check" },
               );
             })
             .catch(() => pushErr("Could not read that video"))
@@ -306,7 +306,7 @@ function AdvancedDialog({ close }: { close: () => void }) {
                 return;
               }
               updateActive((d) => { d.gen.seed = parsed.data.seed; d.gen.person = parsed.data.person; d.gen.negativePrompt = parsed.data.negativePrompt; });
-              push("Advanced settings saved", { icon: "✓" });
+              push("Advanced settings saved", { icon: "check" });
               close();
             }}
           >
@@ -352,7 +352,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       pushErr("No playable file stored for this video.");
       return;
     }
-    push(`Grabbing ${which.toLowerCase()}…`, { icon: "…" });
+    push(`Grabbing ${which.toLowerCase()}…`, { icon: "loading" });
     captureAt(authedMediaUrl(v.url), t)
       .then(async (img) => {
         const r = await addElement("frames", {
@@ -360,7 +360,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
           imageUrl: img,
           note: "Grabbed from library video",
         });
-        push(r.ok ? `${which} saved to Elements` : (r.error ?? "Could not save frame"), { icon: r.ok ? "✓" : "!", tone: r.ok ? "ok" : "danger" });
+        push(r.ok ? `${which} saved to Elements` : (r.error ?? "Could not save frame"), { icon: r.ok ? "check" : "alert", tone: r.ok ? "ok" : "danger" });
       })
       .catch(() => {
         pushErr("Live grab blocked by the browser — try playing the video first");
@@ -387,12 +387,12 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     router.push(`/p/${project.id}/generate`);
     if (r.missing?.length) {
       push("Config reloaded — some inputs are gone", {
-        icon: "✦",
+        icon: "sparkles",
         tone: "danger",
         detail: r.missing.slice(0, 3).join(" · "),
       });
     } else {
-      push("Config reloaded into composer", { icon: "✦", detail: "Review and hit Generate when ready" });
+      push("Config reloaded into composer", { icon: "sparkles", detail: "Review and hit Generate when ready" });
     }
   };
 
@@ -645,7 +645,7 @@ function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => 
       close={close}
       confirm={() => {
         void deleteVideo(videoId).then(() => {
-          push(copy.done, { icon: mode === "delete" ? "🗑" : "✓", tone: "info" });
+          push(copy.done, { icon: mode === "delete" ? "trash" : "check", tone: "info" });
           set({ video: "", confirmDel: "" });
           close();
         });
@@ -710,7 +710,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
           setInfo((p) => ({ ...p, ...patch }));
           if (patch.processingStatus === "succeeded" && patch.uploadStatus !== "uploaded") {
             if (pollRef.current) clearInterval(pollRef.current);
-            push("YouTube video is live", { icon: "▶" });
+            push("YouTube video is live", { icon: "play" });
           }
           if (["failed", "terminated"].includes(patch.processingStatus) || ["failed", "rejected"].includes(patch.uploadStatus)) {
             if (pollRef.current) clearInterval(pollRef.current);
@@ -722,7 +722,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
           // non-gesture popups) and point at Refresh, which reconnects.
           if (isAuthFailure(e)) {
             if (pollRef.current) clearInterval(pollRef.current);
-            push("YouTube session expired — open the video and Refresh to reconnect", { icon: "!" });
+            push("YouTube session expired — open the video and Refresh to reconnect", { icon: "alert" });
           }
         });
     };
@@ -733,17 +733,17 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
   const refresh = () => {
     const id = v.youtube?.videoId || info?.videoId;
     if (!id) {
-      push("Nothing published yet", { icon: "▶", tone: "info" });
+      push("Nothing published yet", { icon: "play", tone: "info" });
       return;
     }
-    push("Refreshing YouTube status…", { icon: "…" });
+    push("Refreshing YouTube status…", { icon: "loading" });
     // Click gesture: reconnects first when the token is dead.
     withYtAuth(project.settings.ytClientId || "", (tok) => ytVideoState(tok, id))
       .then((item) => {
         const patch = ytPatch(item);
         saveYt(patch);
         setInfo((p) => ({ ...p, ...patch }));
-        push("YouTube status updated", { icon: "▶" });
+        push("YouTube status updated", { icon: "play" });
       })
       .catch((e) => pushErr("Refresh failed", errOf(e, 120)));
   };
@@ -780,7 +780,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       saveYt(patch);
       setInfo((p) => ({ ...p, ...patch }));
       setPct(100);
-      push("Upload complete — YouTube is processing", { icon: "▶", detail: `youtu.be/${id}` });
+      push("Upload complete — YouTube is processing", { icon: "play", detail: `youtu.be/${id}` });
       poll(id);
     } catch (e) {
       const msg = String((e as Error).message || e).slice(0, 220);

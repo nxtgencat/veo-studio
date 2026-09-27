@@ -42,7 +42,7 @@ function AuthGate() {
       setBusy(false);
       if (r.ok) {
         setPw("");
-        push("Studio unlocked", { icon: "✓" });
+        push("Studio unlocked", { icon: "check" });
       } else {
         setError("Wrong password — try again.");
       }

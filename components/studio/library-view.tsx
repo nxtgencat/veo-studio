@@ -59,7 +59,7 @@ export function LibraryView() {
     abortRef.current = ctrl;
     setBusy(true);
     const total = files.length;
-    push(total > 1 ? `Uploading ${total} videos…` : "Uploading video…", { icon: "↑" });
+    push(total > 1 ? `Uploading ${total} videos…` : "Uploading video…", { icon: "upload" });
     let ok = 0;
     for (let i = 0; i < total; i++) {
       const file = files[i];
@@ -78,7 +78,7 @@ export function LibraryView() {
           pushErr(total > 1 ? `${file.name}: ${r.error ?? "Import failed"}` : (r.error ?? "Import failed"));
         } else {
           ok++;
-          if (total === 1) push(r.stored ? "Video uploaded to Library" : "Video recorded in Library (no file stored)", { icon: "✓" });
+          if (total === 1) push(r.stored ? "Video uploaded to Library" : "Video recorded in Library (no file stored)", { icon: "check" });
         }
       } catch {
         if (!ctrl.signal.aborted) pushErr(total > 1 ? `${file.name}: could not read` : "Could not read that video");
@@ -88,10 +88,10 @@ export function LibraryView() {
     setProgress("");
     setBusy(false);
     if (ctrl.signal.aborted) {
-      push(`Upload cancelled${ok ? ` — ${ok} already imported` : ""}`, { icon: "×", tone: "info" });
+      push(`Upload cancelled${ok ? ` — ${ok} already imported` : ""}`, { icon: "cancel", tone: "info" });
     } else if (total > 1) {
       push(ok === total ? `All ${total} videos uploaded to Library` : `${ok} of ${total} videos imported`, {
-        icon: ok ? "✓" : "!",
+        icon: ok ? "check" : "alert",
         tone: ok ? undefined : "danger",
       });
     }

@@ -7,15 +7,18 @@ import type { YtAccountState, YtChannelMeta } from "@/lib/youtube";
 
 export type ToastTone = "ok" | "danger" | "info" | "pending" | "draft" | "brand";
 
+/** Named toast glyphs — lucide icons only. Legacy symbols handled as aliases in ToastGlyph. */
+export type ToastIcon = "check" | "plus" | "trash" | "loading" | "pending" | "alert" | "error" | "play" | "youtube" | "sparkles" | "upload" | "cancel" | "x";
+
 export interface ToastOptions {
-  icon?: string;
+  icon?: ToastIcon;
   tone?: ToastTone;
   detail?: string;
 }
 
 /** Shared manager (same primitive shadcn's Toaster wraps). Limit/timeout live on the Provider. */
 export const slateToastManager = ToastPrimitive.createToastManager<{
-  icon?: string;
+  icon?: ToastIcon;
   tone?: ToastTone;
 }>();
 
@@ -45,9 +48,9 @@ interface ToastState {
   push: (msg: string, opts?: ToastOptions) => void;
 }
 
-/** Error toast shorthand: danger tone + ! icon, optional detail. */
+/** Error toast shorthand: danger tone + alert icon, optional detail. */
 export function pushErr(msg: string, detail?: string): void {
-  toast(msg, { icon: "!", tone: "danger", ...(detail ? { detail } : {}) });
+  toast(msg, { icon: "alert", tone: "danger", ...(detail ? { detail } : {}) });
 }
 
 export const useToasts = create<ToastState>()(() => ({

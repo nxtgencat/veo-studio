@@ -34,7 +34,7 @@ export function ElementsView() {
     if (!el) return;
     attachElement(cat, el.img);
     router.push(`/p/${projectId}/generate`);
-    push(cat === "frames" ? "Attached as frame" : "Attached as reference", { icon: "✦" });
+    push(cat === "frames" ? "Attached as frame" : "Attached as reference", { icon: "sparkles" });
   };
 
   return (
@@ -124,7 +124,7 @@ export function ElementsView() {
               pushErr(r.error ?? "Could not add element");
               return;
             }
-            push("Element added", { icon: "✓" });
+            push("Element added", { icon: "check" });
             set({ add: "" });
           }}
         />
@@ -238,7 +238,7 @@ function RenameElementModal({ cat, id, close }: { cat: ElementCat; id: string; c
         pushErr(r.error ?? "Could not rename");
         return;
       }
-      push("Element renamed", { icon: "✓" });
+      push("Element renamed", { icon: "check" });
       close();
     });
   };
@@ -300,7 +300,7 @@ function ViewElementModal({ cat, id, close }: { cat: ElementCat; id: string; clo
             onClick={() => {
               attachElement(cat, el.img);
               router.push(`/p/${project.id}/generate`);
-              push(cat === "frames" ? "Attached as frame" : "Attached as reference", { icon: "✦" });
+              push(cat === "frames" ? "Attached as frame" : "Attached as reference", { icon: "sparkles" });
               close();
             }}
           >
@@ -329,7 +329,7 @@ function DeleteElementConfirm({ cat, id, close }: { cat: ElementCat; id: string;
       body="Removes it from Elements. Videos already generated from it are not affected."
       close={close}
       confirm={() => {
-        void deleteElement(id).then(() => push("Element deleted", { icon: "🗑", tone: "info" }));
+        void deleteElement(id).then(() => push("Element deleted", { icon: "trash", tone: "info" }));
         close();
       }}
     />

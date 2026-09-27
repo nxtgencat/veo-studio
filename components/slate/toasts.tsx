@@ -5,7 +5,7 @@ import { cn } from "cn";
 import {
   Check, Loader2, MonitorPlay, Plus, Sparkles, Trash2, TriangleAlert, Upload, X,
 } from "lucide-react";
-import { slateToastManager, type ToastTone } from "@/stores/use-ui";
+import { slateToastManager, type ToastIcon, type ToastTone } from "@/stores/use-ui";
 
 const toneBg: Record<ToastTone, string> = {
   ok: "slate-badge-ok",
@@ -16,28 +16,32 @@ const toneBg: Record<ToastTone, string> = {
   brand: "slate-badge-brand",
 };
 
-/** Status glyph — lucide icons like shadcn's ToastIcon, not text/emoji. */
-function ToastGlyph({ icon, tone }: { icon?: string; tone: ToastTone }) {
+/** Status glyph — named lucide icons only. */
+function ToastGlyph({ icon, tone }: { icon?: ToastIcon; tone: ToastTone }) {
   if (tone === "pending") return <Loader2 className="size-4 animate-spin" aria-hidden="true" />;
   switch (icon) {
     case "check":
-    case "✓":
       return <Check className="size-4" aria-hidden="true" />;
     case "plus":
       return <Plus className="size-4" aria-hidden="true" />;
     case "trash":
-    case "🗑":
       return <Trash2 className="size-4" aria-hidden="true" />;
-    case "…":
+    case "loading":
+    case "pending":
       return <Loader2 className="size-4 animate-spin" aria-hidden="true" />;
-    case "!":
+    case "alert":
+    case "error":
       return <TriangleAlert className="size-4" aria-hidden="true" />;
-    case "▶":
+    case "play":
+    case "youtube":
       return <MonitorPlay className="size-4" aria-hidden="true" />;
-    case "✦":
+    case "sparkles":
       return <Sparkles className="size-4" aria-hidden="true" />;
-    case "↑":
+    case "upload":
       return <Upload className="size-4" aria-hidden="true" />;
+    case "cancel":
+    case "x":
+      return <X className="size-4" aria-hidden="true" />;
     default:
       return <Check className="size-4" aria-hidden="true" />;
   }
@@ -64,7 +68,7 @@ export function SlateToastProvider({ children }: { children: React.ReactNode }) 
 }
 
 function SlateToastList() {
-  const { toasts } = ToastPrimitive.useToastManager<{ icon?: string; tone?: ToastTone }>();
+  const { toasts } = ToastPrimitive.useToastManager<{ icon?: ToastIcon; tone?: ToastTone }>();
 
   return toasts.map((t) => {
     const tone = t.data?.tone ?? "ok";

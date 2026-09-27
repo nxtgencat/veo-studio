@@ -71,7 +71,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             label="Lock studio (forget password on this browser)"
             onClick={() => {
               logout();
-              push("Locked", { icon: "✓", tone: "info" });
+              push("Locked", { icon: "check", tone: "info" });
             }}
           >
             <Lock className="size-3.5" />

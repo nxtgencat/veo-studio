@@ -100,7 +100,7 @@ export function SettingsView() {
     setSaBusy(true);
     void saveSettings({ saJson: sa, authMode }).then(
       () => {
-        push("Service account connected", { icon: "✓", detail: sa.trim() ? "Key exchanged for a token successfully" : "Auth method updated" });
+        push("Service account connected", { icon: "check", detail: sa.trim() ? "Key exchanged for a token successfully" : "Auth method updated" });
         setSa("");
       },
       (e) => {
@@ -117,7 +117,7 @@ export function SettingsView() {
       () => {
         const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
         setBucket("");
-        push("Bucket connected · Off", { icon: "✓", detail: loc ? `Reachable · ${loc}` : "Verified — flip the toggle to use it" });
+        push("Bucket connected · Off", { icon: "check", detail: loc ? `Reachable · ${loc}` : "Verified — flip the toggle to use it" });
       },
       (e) => {
         pushErr("Bucket save failed", errOf(e, 160));
@@ -131,7 +131,7 @@ export function SettingsView() {
     setTogBusy(true);
     const patch = bucketOn ? { useBucket: false } : { bucket: bucketId, useBucket: true };
     void saveSettings(patch).then(
-      () => push(bucketOn ? "Bucket off" : `Bucket on — outputs save to gs://${bucketId}`, { icon: "✓", tone: bucketOn ? "info" : "ok" }),
+      () => push(bucketOn ? "Bucket off" : `Bucket on — outputs save to gs://${bucketId}`, { icon: "check", tone: bucketOn ? "info" : "ok" }),
       (e) => pushErr("Bucket toggle failed", errOf(e, 160)),
     ).finally(() => setTogBusy(false));
   };
@@ -139,7 +139,7 @@ export function SettingsView() {
     if (bktBusy || !bucketId) return;
     setBktBusy(true);
     void saveSettings({ bucket: "", useBucket: false }).then(
-      () => push("Bucket disconnected", { icon: "✓", tone: "info" }),
+      () => push("Bucket disconnected", { icon: "check", tone: "info" }),
       (e) => pushErr("Disconnect failed", errOf(e, 140)),
     ).finally(() => setBktBusy(false));
   };
@@ -151,7 +151,7 @@ export function SettingsView() {
     void saveSettings({ ytClientId: id }).then(
       () => {
         setYtId("");
-        push("YouTube OAuth app saved", { icon: "✓" });
+        push("YouTube OAuth app saved", { icon: "check" });
       },
       (e) => pushErr("Save failed", errOf(e, 140)),
     ).finally(() => setYtAppBusy(false));
@@ -163,7 +163,7 @@ export function SettingsView() {
     ytRevokeAccess(useYtAuth.getState().token);
     useYtAuth.getState().clear();
     void saveSettings({ ytClientId: "" }).then(
-      () => push("YouTube OAuth app disconnected", { icon: "▶", tone: "info" }),
+      () => push("YouTube OAuth app disconnected", { icon: "play", tone: "info" }),
       (e) => pushErr("Disconnect failed", errOf(e, 140)),
     ).finally(() => setYtAppBusy(false));
   };
@@ -172,7 +172,7 @@ export function SettingsView() {
     if (ytPrefsBusy) return;
     setYtPrefsBusy(true);
     void saveSettings({ ytPrivacy: ytPriv as "private" | "unlisted" | "public", ytCategory: ytCat }).then(
-      () => push("Publishing defaults saved", { icon: "✓" }),
+      () => push("Publishing defaults saved", { icon: "check" }),
       (e) => pushErr("Save failed", errOf(e, 140)),
     ).finally(() => setYtPrefsBusy(false));
   };
@@ -188,7 +188,7 @@ export function SettingsView() {
     try {
       const c = await ytConnectWithChannel(ytAppId);
       useYtAuth.getState().setAuth({ token: c.token, exp: c.exp, channel: c.channel, meta: c.meta, account: c.account, detail: c.detail });
-      push(c.channel ? `Connected as ${c.channel}` : "YouTube connected", { icon: "▶" });
+      push(c.channel ? `Connected as ${c.channel}` : "YouTube connected", { icon: "play" });
     } catch (e) {
       pushErr("YouTube connect failed", errOf(e, 140));
     } finally {
@@ -303,7 +303,7 @@ export function SettingsView() {
                   // Revoke server-side too: memory-clear alone leaves the token live ~1h.
                   ytRevokeAccess(useYtAuth.getState().token);
                   useYtAuth.getState().clear();
-                  push("YouTube disconnected", { icon: "▶", tone: "info" });
+                  push("YouTube disconnected", { icon: "play", tone: "info" });
                 }}>
                   <LogOut className="size-3.5" /> Disconnect
                 </SlateButton>
@@ -388,7 +388,7 @@ export function SettingsView() {
                       if (saBusy) return;
                       setSaBusy(true);
                       void saveSettings({ saJson: "" }).then(
-                        () => push("Service account disconnected", { icon: "✓", tone: "info" }),
+                        () => push("Service account disconnected", { icon: "check", tone: "info" }),
                         (e) => pushErr("Disconnect failed", errOf(e, 140)),
                       ).finally(() => setSaBusy(false));
                     }}
@@ -545,7 +545,7 @@ function BackupCard() {
   const onBuild = () => {
     void buildNow().then(
       (row) => {
-        if (row) push("Backup packed", { icon: "✓", detail: row.filename });
+        if (row) push("Backup packed", { icon: "check", detail: row.filename });
         else pushErr("Backup failed");
       },
     );
@@ -557,8 +557,8 @@ function BackupCard() {
     void upload(f, ctrl.signal).then(
       (row) => {
         uploadCtrl.current = null;
-        if (row) push("Backup stored", { icon: "✓", detail: row.filename });
-        else if (ctrl.signal.aborted) push("Upload cancelled", { icon: "×", tone: "info" });
+        if (row) push("Backup stored", { icon: "check", detail: row.filename });
+        else if (ctrl.signal.aborted) push("Upload cancelled", { icon: "cancel", tone: "info" });
         else pushErr("Upload failed — not a readable backup");
       },
     );
@@ -581,7 +581,7 @@ function BackupCard() {
     setDeleteId(null);
     void remove(id).then(
       (ok) => {
-        if (ok) push("Backup deleted", { icon: "🗑", tone: "info" });
+        if (ok) push("Backup deleted", { icon: "trash", tone: "info" });
         else pushErr("Delete failed");
       },
     );
@@ -607,7 +607,7 @@ function BackupCard() {
         const total = Object.values(imp).reduce((a, n) => a + (Number(n) || 0), 0);
         await reloadProjects().catch(() => {});
         push(`Restore complete — ${total} records imported`, {
-          icon: "✓",
+          icon: "check",
           detail: `projects ${imp.projects ?? 0} · elements ${imp.elements ?? 0} · library ${imp.library ?? 0} · media ${imp.media ?? 0}`,
         });
       },
