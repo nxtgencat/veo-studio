@@ -3,7 +3,7 @@ import { z } from "zod";
 // ---------- shared primitives ----------
 export const generationModeSchema = z.enum(["t2v", "i2v", "frames", "r2v", "extend"]);
 export const videoStatusSchema = z.enum(["pending", "success", "failed"]);
-export const studioTabSchema = z.enum(["generate", "library", "elements", "settings"]);
+export const studioTabSchema = z.enum(["generate", "script", "library", "elements", "settings"]);
 export const elementCatSchema = z.enum(["characters", "locations", "assets", "frames"]);
 
 export const genDraftSchema = z.object({

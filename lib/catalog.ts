@@ -12,6 +12,7 @@ export const MODES = [
 
 export const TABS = [
   { id: "generate", label: "Generate", icon: "wand-sparkles" },
+  { id: "script", label: "Script", icon: "scroll-text" },
   { id: "library", label: "Library", icon: "film" },
   { id: "elements", label: "Elements", icon: "shapes" },
   { id: "settings", label: "Settings", icon: "settings-2" },

@@ -15,6 +15,18 @@ import { capabilitiesSnapshot } from "./capabilities.ts";
 import { pricingTable } from "./pricing.ts";
 import { jobInputSchema, zodDetails } from "./validation.ts";
 import { cancelJob, createJob, getJob, jobElapsedMs, jobEta } from "./jobs.ts";
+import {
+  MAX_COMMIT_FILES,
+  buildScriptView,
+  canonHash,
+  checkFileSize,
+  diffDocs,
+  docKeys,
+  fileRole,
+  parseScriptText,
+  rawHash,
+  type ScriptDoc,
+} from "./scripts.ts";
 import { logger } from "./logger.ts";
 
 export const app = new Hono();
@@ -128,6 +140,11 @@ app.delete("/projects/:id", async (c) => {
   db.query("DELETE FROM jobs WHERE project_id=?").run(pid);
   db.query("DELETE FROM library WHERE project_id=?").run(pid);
   db.query("DELETE FROM project_settings WHERE project_id=?").run(pid);
+  const scriptIds = db.query("SELECT id FROM scripts WHERE project_id=?").all(pid) as { id: string }[];
+  for (const s of scriptIds) {
+    db.query("DELETE FROM script_files WHERE script_id=?").run(s.id);
+  }
+  db.query("DELETE FROM scripts WHERE project_id=?").run(pid);
   db.query("DELETE FROM projects WHERE id=?").run(pid);
   // Drop hosted files no other library row references (GCS objects untouched).
   for (const mid of mids) {
@@ -684,6 +701,231 @@ app.post("/backups/:id/restore", async (c) => {
 
 app.delete("/backups/:id", (c) => {
   if (!deleteBackup(c.req.param("id"))) return err(c, 404, "BACKUP_NOT_FOUND", "No such backup");
+  return c.json({ deleted: true });
+});
+
+// ---------- scripts (skill-v5 YAML packages: raw stored verbatim, derived on read) ----------
+type ScriptFileRow = { id: string; script_id: string; filename: string; raw_text: string; raw_hash: string; canon_hash: string; created_at: string };
+
+function scriptFilesOf(scriptId: string): ScriptFileRow[] {
+  return getDb().query("SELECT * FROM script_files WHERE script_id=? ORDER BY created_at, rowid").all(scriptId) as ScriptFileRow[];
+}
+
+function scriptBelongs(scriptId: string, projectId: string): boolean {
+  return !!getDb().query("SELECT id FROM scripts WHERE id=? AND project_id=?").get(scriptId, projectId);
+}
+
+function cleanFilename(name: unknown): string {
+  const base = String(name ?? "pasted.yaml").split(/[\\/]/).pop()?.trim() || "pasted.yaml";
+  return base.slice(0, 200);
+}
+
+app.get("/projects/:id/scripts", (c) => {
+  const pid = c.req.param("id");
+  if (!projectExists(pid)) return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  const db = getDb();
+  const scripts = db.query("SELECT * FROM scripts WHERE project_id=? ORDER BY updated_at DESC").all(pid) as any[];
+  return c.json({
+    scripts: scripts.map((s) => {
+      const files = scriptFilesOf(s.id);
+      let calls = 0;
+      let entities = 0;
+      for (const f of files) {
+        for (const d of parseScriptText(f.raw_text).docs) {
+          if (d.kind === "call") calls++;
+          else if (d.kind === "character" || d.kind === "location" || d.kind === "prop" || d.kind === "composite") entities++;
+        }
+      }
+      return {
+        id: s.id, title: s.title, updatedAt: s.updated_at,
+        files: files.map((f) => ({ id: f.id, filename: f.filename })),
+        counts: { files: files.length, calls, entities },
+      };
+    }),
+  });
+});
+
+/**
+ * Preview add-files without saving: per file → duplicate (exact or
+ * formatting-only) | update (≥60% shared doc keys, with field diffs) |
+ * new | invalid (blocked, with doc number + error).
+ */
+app.post("/projects/:id/scripts/preview", async (c) => {
+  const pid = c.req.param("id");
+  if (!projectExists(pid)) return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  const body = await readJson(c);
+  const incoming = Array.isArray(body.files) ? body.files : [];
+  if (incoming.length > MAX_COMMIT_FILES) return err(c, 422, "TOO_MANY_FILES", `At most ${MAX_COMMIT_FILES} files per check`);
+  const scope = c.req.query("scriptId");
+  const db = getDb();
+  const existingRows: ScriptFileRow[] =
+    scope && scriptBelongs(scope, pid)
+      ? scriptFilesOf(scope)
+      : (db.query(
+        "SELECT f.*, s.title AS script_title FROM script_files f JOIN scripts s ON s.id=f.script_id WHERE s.project_id=? ORDER BY f.created_at",
+      ).all(pid) as ScriptFileRow[]);
+  // Parse each stored file once: hashes decide duplicates, keys decide updates.
+  const existing = existingRows.map((f) => {
+    const docs = parseScriptText(f.raw_text).docs;
+    return { ...f, docs, keys: docKeys(docs) };
+  });
+  const out = [];
+  for (const item of incoming.slice(0, MAX_COMMIT_FILES)) {
+    const filename = cleanFilename(item?.filename);
+    const text = typeof item?.text === "string" ? item.text : "";
+    const tooBig = checkFileSize(text);
+    if (!text.trim() || tooBig) {
+      out.push({ filename, status: "invalid", error: { doc: 0, message: tooBig ?? "file is empty" } });
+      continue;
+    }
+    const { docs, error } = parseScriptText(text);
+    if (error) {
+      out.push({ filename, status: "invalid", error });
+      continue;
+    }
+    const rh = rawHash(text);
+    const ch = canonHash(text) as string;
+    const exact = existing.find((f) => f.raw_hash === rh);
+    const canonical = exact ?? existing.find((f) => f.canon_hash === ch);
+    if (canonical) {
+      out.push({
+        filename, role: fileRole(docs), status: "duplicate", docCount: docs.length,
+        match: { scriptId: canonical.script_id, fileId: canonical.id, filename: canonical.filename, kind: canonical.raw_hash === rh ? "exact" : "canonical" },
+      });
+      continue;
+    }
+    const keys = docKeys(docs);
+    let best: (typeof existing)[number] | null = null;
+    let bestShared = 0;
+    for (const f of existing) {
+      const shared = [...keys].filter((k) => f.keys.has(k)).length;
+      const ratio = keys.size ? shared / keys.size : 0;
+      if (ratio > bestShared) {
+        bestShared = ratio;
+        best = f;
+      }
+    }
+    if (best && bestShared >= 0.6) {
+      out.push({
+        filename, role: fileRole(docs), status: "update", docCount: docs.length,
+        match: { scriptId: best.script_id, fileId: best.id, filename: best.filename, kind: "overlap", shared: Math.round(bestShared * 100) },
+        changes: diffDocs(best.docs, docs),
+      });
+      continue;
+    }
+    out.push({ filename, role: fileRole(docs), status: "new", docCount: docs.length });
+  }
+  return c.json({ files: out });
+});
+
+/**
+ * Commit add-files. Invalid YAML is blocked with its doc number + error;
+ * duplicates/updates are decided by the caller (Replace / Add as new / Skip).
+ */
+app.post("/projects/:id/scripts/commit", async (c) => {
+  const pid = c.req.param("id");
+  if (!projectExists(pid)) return err(c, 404, "PROJECT_NOT_FOUND", "No such project");
+  const body = await readJson(c);
+  const incoming = Array.isArray(body.files) ? body.files : [];
+  if (incoming.length > MAX_COMMIT_FILES) return err(c, 422, "TOO_MANY_FILES", `At most ${MAX_COMMIT_FILES} files per commit`);
+  const db = getDb();
+  let scriptId = typeof body.scriptId === "string" && scriptBelongs(body.scriptId, pid) ? (body.scriptId as string) : null;
+  if (typeof body.scriptId === "string" && body.scriptId && !scriptId) {
+    return err(c, 404, "SCRIPT_NOT_FOUND", "No such script in this project");
+  }
+  // Validate everything first: one bad doc blocks the whole commit.
+  const staged: { filename: string; text: string; action: string; targetFileId: string | null; docs: ScriptDoc[] }[] = [];
+  for (const item of incoming.slice(0, MAX_COMMIT_FILES)) {
+    const action = item?.action === "replace" || item?.action === "skip" ? item.action : "add";
+    if (action === "skip") continue;
+    const filename = cleanFilename(item?.filename);
+    const text = typeof item?.text === "string" ? item.text : "";
+    const tooBig = checkFileSize(text);
+    if (!text.trim() || tooBig) {
+      return err(c, 422, "SCRIPT_INVALID", `${filename}: ${tooBig ?? "file is empty"}`, { filename, doc: 0 });
+    }
+    const { docs, error } = parseScriptText(text);
+    if (error) {
+      return err(c, 422, "SCRIPT_INVALID", `${filename} doc ${error.doc}: ${error.message}`, { filename, ...error });
+    }
+    const targetFileId = typeof item?.targetFileId === "string" ? item.targetFileId : null;
+    if (action === "replace") {
+      const target = targetFileId ? (db.query("SELECT * FROM script_files WHERE id=?").get(targetFileId) as ScriptFileRow | null) : null;
+      if (!target || !scriptBelongs(target.script_id, pid)) {
+        return err(c, 404, "SCRIPT_FILE_NOT_FOUND", `${filename}: replacement target is gone`);
+      }
+      scriptId ??= target.script_id;
+    }
+    staged.push({ filename, text, action, targetFileId, docs });
+  }
+  if (!staged.length) return c.json({ scriptId, applied: { added: 0, replaced: 0, skipped: incoming.length } });
+  if (!scriptId) {
+    // New script: title from the first package_meta, else the filename.
+    const metaDoc = staged.flatMap((s) => s.docs).find((d) => d.kind === "package_meta");
+    const title = (typeof metaDoc?.title === "string" && metaDoc.title.trim()) || staged[0]?.filename.replace(/\.(yaml|yml)$/i, "") || "Untitled script";
+    scriptId = Bun.randomUUIDv7();
+    const now = nowIso();
+    db.query("INSERT INTO scripts (id, project_id, title, created_at, updated_at) VALUES (?,?,?,?,?)").run(scriptId, pid, title, now, now);
+  }
+  const sid = scriptId;
+  let added = 0;
+  let replaced = 0;
+  let metaTitle: string | null = null;
+  for (const s of staged) {
+    const rh = rawHash(s.text);
+    const ch = canonHash(s.text) as string;
+    if (s.action === "replace" && s.targetFileId) {
+      db.query("UPDATE script_files SET filename=?, raw_text=?, raw_hash=?, canon_hash=? WHERE id=?").run(s.filename, s.text, rh, ch, s.targetFileId);
+      replaced++;
+    } else {
+      db.query("INSERT INTO script_files (id, script_id, filename, raw_text, raw_hash, canon_hash, created_at) VALUES (?,?,?,?,?,?,?)").run(
+        Bun.randomUUIDv7(), sid, s.filename, s.text, rh, ch, nowIso(),
+      );
+      added++;
+    }
+    const m = s.docs.find((d) => d.kind === "package_meta");
+    if (m && typeof m.title === "string" && m.title.trim()) metaTitle = m.title.trim();
+  }
+  db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), sid);
+  if (metaTitle) db.query("UPDATE scripts SET title=? WHERE id=?").run(metaTitle, sid);
+  logger.info({ projectId: pid, scriptId: sid, added, replaced }, "script files committed");
+  return c.json({ scriptId: sid, applied: { added, replaced, skipped: incoming.length - staged.length } });
+});
+
+app.get("/scripts/:id", (c) => {
+  const row = getDb().query("SELECT * FROM scripts WHERE id=?").get(c.req.param("id")) as any;
+  if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  const files = scriptFilesOf(row.id).map((f) => ({ id: f.id, filename: f.filename, raw: f.raw_text }));
+  return c.json(buildScriptView({ id: row.id, title: row.title, updatedAt: row.updated_at }, files));
+});
+
+app.get("/scripts/:id/raw", (c) => {
+  const row = getDb().query("SELECT * FROM scripts WHERE id=?").get(c.req.param("id")) as any;
+  if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  const fileId = c.req.query("fileId") ?? "";
+  const f = getDb().query("SELECT * FROM script_files WHERE id=? AND script_id=?").get(fileId, row.id) as ScriptFileRow | null;
+  if (!f) return err(c, 404, "SCRIPT_FILE_NOT_FOUND", "No such file in this script");
+  return c.json({ filename: f.filename, text: f.raw_text });
+});
+
+app.delete("/scripts/:id", (c) => {
+  const db = getDb();
+  const row = db.query("SELECT id FROM scripts WHERE id=?").get(c.req.param("id")) as { id: string } | null;
+  if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  db.query("DELETE FROM script_files WHERE script_id=?").run(row.id);
+  db.query("DELETE FROM scripts WHERE id=?").run(row.id);
+  return c.json({ deleted: true });
+});
+
+app.delete("/scripts/:id/files/:fileId", (c) => {
+  const db = getDb();
+  const row = db.query("SELECT id FROM scripts WHERE id=?").get(c.req.param("id")) as { id: string } | null;
+  if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  const r = db.query("DELETE FROM script_files WHERE id=? AND script_id=?").run(c.req.param("fileId"), row.id);
+  if (!r.changes) return err(c, 404, "SCRIPT_FILE_NOT_FOUND", "No such file in this script");
+  const left = db.query("SELECT id FROM script_files WHERE script_id=? LIMIT 1").get(row.id);
+  if (!left) db.query("DELETE FROM scripts WHERE id=?").run(row.id);
+  else db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), row.id);
   return c.json({ deleted: true });
 });
 

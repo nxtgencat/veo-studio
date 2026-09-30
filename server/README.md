@@ -36,6 +36,7 @@ All errors are `{ error: { code, message, details? } }`.
 - CRUD: `POST/GET /projects`, `GET/PATCH/DELETE /projects/:id`, `/projects/:id/elements` (`characters | locations | assets | frames`), `PATCH/DELETE /elements/:id`.
 - `GET/PATCH /projects/:id/settings` — service-account JSON (write-only), bucket, `useBucket` toggle, `authMode` (`service_account` default | `env`). Reads expose only `hasSaJson` / `saEmail` / `saProjectId`, never the key. Writes are **verified live before saving** (fresh keys must mint a token; buckets must exist and grant at least object read).
 - Backups (stored `.tar` files, plain tar — mp4s don't compress): `POST /backups` builds everything, `GET /backups` lists, `GET /backups/:id/download` streams the file, chunked upload files one, `POST /backups/:id/restore` merges with per-table counts, `DELETE /backups/:id` removes file + row. 1 GB cap per file, enforced at upload init and build.
+- Scripts (skill-v5 YAML packages): raw text stored verbatim, everything else derived on read. `GET /projects/:id/scripts` lists; `POST /projects/:id/scripts/preview` classifies each file without saving (`new` | `update` with per-field diffs at ≥60% shared doc keys | `duplicate` exact or formatting-only | `invalid` with doc number + error); `POST /projects/:id/scripts/commit` applies `add` / `replace` / `skip` per file (invalid YAML blocked with `SCRIPT_INVALID`); `GET /scripts/:id` builds the view (files, entities, shots, calls with running times, scenes, entity→calls index, machine-checkable Part C `checks[]`); `GET /scripts/:id/raw?fileId=` returns the verbatim text; `DELETE /scripts/:id` and `DELETE /scripts/:id/files/:fileId` remove. Roles come from the `kind`s present, never the filename.
 - `GET /health` → `{ ok: true }`.
 
 ## Rules enforced (`src/validation.ts`)
@@ -92,8 +93,11 @@ server/
   src/backup.ts        plain-tar export/import + chunked upload sessions
   src/routes.ts        Hono routes
   src/uploads.ts       chunked upload sessions (init/part/complete/abort)
+  src/scripts.ts       skill-v5 YAML parsing (per-doc errors), duplicate/update
+                       classification, view builder (files/entities/shots/calls/
+                       scenes/reverse index/Part C checks)
   src/index.ts         entrypoint (Bun.serve)
-  tests/               bun:test (validation, pricing, jobs, frames)
+  tests/               bun:test (validation, pricing, jobs, frames, scripts)
 ```
 
 ## Test / typecheck

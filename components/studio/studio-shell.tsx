@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Clapperboard, Database, Film, Lock, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
+import { Clapperboard, Database, Film, Lock, ScrollText, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
 import { TABS } from "@/lib/catalog";
 import { money } from "@/lib/format";
 import { modelOf, pendingOf, spendOf } from "@/lib/pricing";
@@ -15,7 +15,7 @@ import { SlateSidebar, SlateSidebarDrawer, SlateSidebarTrigger } from "@/compone
 import { ProjectList } from "@/components/studio/project-list";
 
 const TAB_ICONS: Record<string, typeof Film> = {
-  generate: WandSparkles, library: Film, elements: Shapes, settings: Settings2,
+  generate: WandSparkles, script: ScrollText, library: Film, elements: Shapes, settings: Settings2,
 };
 
 export function StudioShell({ children }: { children: React.ReactNode }) {

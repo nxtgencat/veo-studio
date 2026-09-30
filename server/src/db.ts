@@ -9,7 +9,7 @@ export function getDb(): Database {
   const file = process.env.SQLITE_FILE ?? "data/veo.sqlite";
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   db = new Database(file, { create: true });
-  db.exec("PRAGMA journal_mode = WAL;");
+  db.run("PRAGMA journal_mode = WAL;");
   migrate(db);
   return db;
 }
@@ -20,7 +20,7 @@ export function projectExists(pid: string): boolean {
 }
 
 export function migrate(d: Database) {
-  d.exec(`
+  d.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -118,19 +118,37 @@ export function migrate(d: Database) {
       counts TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS scripts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scripts_project ON scripts(project_id);
+    CREATE TABLE IF NOT EXISTS script_files (
+      id TEXT PRIMARY KEY,
+      script_id TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      raw_hash TEXT NOT NULL,
+      canon_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_files_script ON script_files(script_id);
   `);
   // Column added after launch — backfill existing databases.
   const cols = d.query("PRAGMA table_info(library)").all() as { name: string }[];
   if (!cols.some((c) => c.name === "gcs_uri")) {
-    d.exec("ALTER TABLE library ADD COLUMN gcs_uri TEXT NOT NULL DEFAULT ''");
+    d.run("ALTER TABLE library ADD COLUMN gcs_uri TEXT NOT NULL DEFAULT ''");
   }
   const jobCols = d.query("PRAGMA table_info(jobs)").all() as { name: string }[];
   // Vertex submit time + completed duration (ms) — powers measured ETAs.
   if (!jobCols.some((c) => c.name === "submitted_at")) {
-    d.exec("ALTER TABLE jobs ADD COLUMN submitted_at TEXT NOT NULL DEFAULT ''");
+    d.run("ALTER TABLE jobs ADD COLUMN submitted_at TEXT NOT NULL DEFAULT ''");
   }
   if (!jobCols.some((c) => c.name === "duration_ms")) {
-    d.exec("ALTER TABLE jobs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0");
+    d.run("ALTER TABLE jobs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0");
   }
   for (const [table, column, ddl] of [
     ["jobs", "person", "TEXT NOT NULL DEFAULT 'allow_adult'"],
@@ -147,12 +165,12 @@ export function migrate(d: Database) {
   ] as const) {
     const existing = d.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!existing.some((c) => c.name === column)) {
-      d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      d.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
     }
   }
   // Indexes added after launch — backfill existing databases.
-  d.exec("CREATE INDEX IF NOT EXISTS idx_jobs_model ON jobs(model, created_at)");
-  d.exec("CREATE INDEX IF NOT EXISTS idx_library_video_url ON library(video_url)");
+  d.run("CREATE INDEX IF NOT EXISTS idx_jobs_model ON jobs(model, created_at)");
+  d.run("CREATE INDEX IF NOT EXISTS idx_library_video_url ON library(video_url)");
 }
 
 export function resetDbForTests() {

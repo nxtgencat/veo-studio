@@ -375,6 +375,34 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, "AUTH_STATUS", `Auth check failed (${res.status})`);
     return (await res.json()) as { required: boolean };
   },
+
+  listScripts: (projectId: string) =>
+    req<{ scripts: import("@/lib/script").ScriptSummary[] }>(`/projects/${encodeURIComponent(projectId)}/scripts`),
+
+  previewScripts: (projectId: string, body: { files: { filename: string; text: string }[] }, scriptId?: string) =>
+    req<{ files: import("@/lib/script").PreviewFile[] }>(
+      `/projects/${encodeURIComponent(projectId)}/scripts/preview${scriptId ? `?scriptId=${encodeURIComponent(scriptId)}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  commitScripts: (projectId: string, body: {
+    scriptId?: string;
+    files: { filename: string; text: string; action: "add" | "replace" | "skip"; targetFileId?: string }[];
+  }) =>
+    req<{ scriptId: string | null; applied: { added: number; replaced: number; skipped: number } }>(
+      `/projects/${encodeURIComponent(projectId)}/scripts/commit`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  getScript: (id: string) => req<import("@/lib/script").ScriptDetail>(`/scripts/${encodeURIComponent(id)}`),
+
+  getScriptRaw: (id: string, fileId: string) =>
+    req<{ filename: string; text: string }>(`/scripts/${encodeURIComponent(id)}/raw?fileId=${encodeURIComponent(fileId)}`),
+
+  deleteScript: (id: string) => req<{ deleted: boolean }>(`/scripts/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  deleteScriptFile: (id: string, fileId: string) =>
+    req<{ deleted: boolean }>(`/scripts/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
 };
 
 export function apiBase(): string {

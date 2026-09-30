@@ -6,6 +6,7 @@ import { studioTabSchema } from "@/lib/schemas";
 import { useStudio } from "@/stores/use-studio";
 import { StudioShell } from "@/components/studio/studio-shell";
 import { GenerateView } from "@/components/studio/generate-view";
+import { ScriptView } from "@/components/studio/script-view";
 import { LibraryView } from "@/components/studio/library-view";
 import { ElementsView } from "@/components/studio/elements-view";
 import { SettingsView } from "@/components/studio/settings-view";
@@ -54,6 +55,7 @@ export default function ProjectTabPage() {
           and show section skeletons instead of blank while deopting/hydrating. */}
       <Suspense fallback={<TabLoadingSkeleton />}>
         {params.tab === "generate" && <GenerateView />}
+        {params.tab === "script" && <ScriptView />}
         {params.tab === "library" && <LibraryView />}
         {params.tab === "elements" && <ElementsView />}
         {params.tab === "settings" && <SettingsView />}
