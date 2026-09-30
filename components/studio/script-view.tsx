@@ -427,14 +427,14 @@ function CopyPromptsSplit({ entity }: { entity: ScriptEntity }) {
     );
   };
   return (
-    <span
-      className="inline-flex items-stretch rounded-[8px] border slate-hair overflow-hidden shrink-0 bg-surface"
-      onClick={(e) => e.stopPropagation()}
-    >
+    <span className="inline-flex items-stretch rounded-[8px] border slate-hair overflow-hidden shrink-0 bg-surface">
       <button
         type="button"
         aria-label={`Copy ${entity.id} image prompt`}
-        onClick={() => copy(entity.imagePrompt, "image prompt")}
+        onClick={(e) => {
+          e.stopPropagation();
+          copy(entity.imagePrompt, "image prompt");
+        }}
         className="inline-flex items-center gap-1.5 px-2 h-[30px] text-[12px] font-bold hover:bg-surface2 transition-colors"
       >
         <Copy className="size-3.5" /> Copy
@@ -446,6 +446,7 @@ function CopyPromptsSplit({ entity }: { entity: ScriptEntity }) {
           <button
             type="button"
             aria-label="More copy options"
+            onClick={(e) => e.stopPropagation()}
             className="inline-flex items-center px-1.5 h-[30px] border-l slate-hair hover:bg-surface2 transition-colors"
           >
             <ChevronDown className="size-3.5 text-muted" />

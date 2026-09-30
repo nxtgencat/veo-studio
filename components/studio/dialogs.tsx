@@ -52,7 +52,7 @@ export function StudioDialogs() {
       )}
       {state.picker === "video" && <VideoPickerDialog close={() => close({ picker: "" })} />}
       {state.advanced === "1" && <AdvancedDialog close={() => close({ advanced: "" })} />}
-      {video && <VideoDetailDialog videoId={video.id} close={() => close({ video: "" })} />}
+      {video && <VideoDetailDialog key={video.id} videoId={video.id} close={() => close({ video: "" })} />}
       {ytVideo && <YoutubeDialog videoId={ytVideo.id} close={() => close({ youtube: "" })} />}
       {delVideo && <DeleteVideoConfirm videoId={delVideo.id} close={() => close({ confirmDel: "" })} />}
     </>
@@ -329,7 +329,15 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", youtube: "", confirmDel: "" });
   const v = project?.library.find((x) => x.id === videoId);
-  if (!project || !v) return null;
+  // Instant dismiss: hiding first unmounts the <video> (stopping a slow
+  // buffer and freeing the connection) before the URL round-trip lands,
+  // so close never waits on the network.
+  const [dismissed, setDismissed] = useState(false);
+  const dismiss = () => {
+    setDismissed(true);
+    close();
+  };
+  if (!project || !v || dismissed) return null;
   const m = modelOf(v.model);
   // Extend rows store the 7s chunk on old records but the TOTAL on new ones:
   // expectedDur resolves either way (8s -> 15s -> 22s chains).
@@ -374,7 +382,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     }
     updateActive((d) => { d.gen.mode = "extend"; d.gen.extendVideo = v.id; });
     router.push(`/p/${project.id}/generate`);
-    close();
+    dismiss();
   };
 
   const reload = () => {
@@ -383,7 +391,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       pushErr(r.error ?? "Cannot reload");
       return;
     }
-    close();
+    dismiss();
     router.push(`/p/${project.id}/generate`);
     if (r.missing?.length) {
       push("Config reloaded — some inputs are gone", {
@@ -398,13 +406,13 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
 
   return (
     <SlateDialog
-      onClose={close}
+      onClose={dismiss}
       header={
         <>
           <ModeBadge mode={v.mode} />
           <StatusBadge status={v.status} />
           <SlateBadge tone="draft">{fmtDurPair(displayDur, v.durActual)} · {v.res} · {v.aspect}</SlateBadge>
-          <SlateCloseButton onClick={close} />
+          <SlateCloseButton onClick={dismiss} />
         </>
       }
       footer={
