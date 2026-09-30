@@ -1,10 +1,10 @@
-// Script packages (skill-v5 multi-document YAML): parse on the server only,
-// store raw text verbatim, derive everything else on read.
+// Script packages (multi-document YAML production packages): parse on the
+// server only, store raw text verbatim, derive everything else on read.
 //
 // One module owns: per-doc `---` parsing (precise doc numbers on failure),
 // duplicate/update/new classification, the read-time view builder
-// (files, entities, shots, calls with running times, scenes, reverse index)
-// and the machine-checkable Part C lint `checks[]` list.
+// (files, entities, keyframes, shots, calls with running times, scenes,
+// reverse index) and the machine-checkable Part C lint `checks[]` list.
 
 import { YAML } from "bun";
 
@@ -14,6 +14,7 @@ export type DocKind =
   | "location"
   | "prop"
   | "composite"
+  | "keyframe"
   | "shot"
   | "call"
   | "chunk_header"
@@ -26,6 +27,7 @@ export const DOC_KINDS: DocKind[] = [
   "location",
   "prop",
   "composite",
+  "keyframe",
   "shot",
   "call",
   "chunk_header",
@@ -106,10 +108,11 @@ const ID_PATTERNS: Record<string, RegExp> = {
   location: /^L\d+$/,
   prop: /^P\d+$/,
   composite: /^G\d+$/,
+  keyframe: /^K\d+$/,
   call: /^CL\d+$/,
 };
 
-const CALL_MODES = ["reference-to-video", "extend", "frame-to-video"];
+const CALL_MODES = ["reference-to-video", "extend", "frame-to-video", "text-to-video"];
 
 /** Minimal structural validation: only what the UI and checks need. */
 function validateDoc(kind: DocKind, doc: Record<string, unknown>): string | null {
@@ -142,6 +145,18 @@ function validateDoc(kind: DocKind, doc: Record<string, unknown>): string | null
   }
   if (kind === "asset_log" || kind === "call_log") {
     if (!str(doc.id)) return `${kind} needs a string \`id\``;
+    return null;
+  }
+  if (kind === "keyframe") {
+    if (typeof doc.id !== "string" || !/^K\d+$/.test(doc.id)) {
+      return `keyframe needs an \`id\` like K1 (got "${String(doc.id ?? "missing")}")`;
+    }
+    if (doc.role !== "first" && doc.role !== "last") return `keyframe ${doc.id} needs \`role: first | last\``;
+    if (!str(doc.for_call)) return `keyframe ${doc.id} needs \`for_call\``;
+    if (!Array.isArray(doc.made_from)) return `keyframe ${doc.id} needs a \`made_from\` list`;
+    if (!Array.isArray(doc.contains)) return `keyframe ${doc.id} needs a \`contains\` list`;
+    if (!str(doc.composition)) return `keyframe ${doc.id} needs \`composition\``;
+    if (!str(doc.image_prompt)) return `keyframe ${doc.id} needs \`image_prompt\``;
     return null;
   }
   // character | location | prop | composite (composites carry no name field).
@@ -276,6 +291,7 @@ export interface ViewFile {
   docs: number;
   calls: number;
   entities: number;
+  keyframes: number;
 }
 
 export type EntityKind = "character" | "location" | "prop" | "composite";
@@ -307,6 +323,14 @@ export interface ShotLine {
   id: string;
   who: string;
   text: string;
+}
+
+export interface KeyframeView {
+  id: string;
+  role: "first" | "last";
+  forCall: string;
+  madeFrom: string[];
+  contains: string[];
 }
 
 export interface ShotView {
@@ -355,17 +379,24 @@ export interface CheckItem {
   message: string;
 }
 
+export interface ScriptLinks {
+  entities: Record<string, string>;
+  calls: Record<string, string>;
+}
+
 export interface ScriptDetail {
   script: { id: string; title: string; updatedAt: string };
   files: ViewFile[];
   meta: Record<string, unknown> | null;
   entities: EntityView[];
+  keyframes: KeyframeView[];
   shots: ShotView[];
   calls: CallView[];
   scenes: SceneView[];
   index: Record<string, { calls: string[]; shots: number[] }>;
   checks: CheckItem[];
-  totals: { footageS: number; plannedS: number; targetS: number | null; scenes: number; shots: number; calls: number };
+  totals: { footageS: number; plannedS: number; targetS: number | null; scenes: number; shots: number; calls: number; keyframes: number };
+  links: ScriptLinks;
 }
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -373,7 +404,7 @@ const asStrArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x i
 const asNumArr = (v: unknown): number[] =>
   Array.isArray(v) ? v.filter((x): x is number => typeof x === "number" && Number.isFinite(x)) : [];
 
-/** First sentence of the prompt — the skill defines no call summary field.
+/** First sentence of the prompt — the package defines no call summary field.
  *  Template scaffolding is skipped: a bare `CONTINUE/CARRY: {{…}}` line
  *  carries no story content, and stray placeholders never leak through. */
 function firstSentence(prompt: string): string {
@@ -426,6 +457,7 @@ function renderPrompt(
 export function buildScriptView(
   script: { id: string; title: string; updatedAt: string },
   files: { id: string; filename: string; raw: string }[],
+  links: ScriptLinks = { entities: {}, calls: {} },
 ): ScriptDetail {
   const parsed = files.map((f) => ({ file: f, docs: parseScriptText(f.raw).docs }));
   const metaDoc = parsed.flatMap((p) => p.docs).find((d) => d.kind === "package_meta") ?? null;
@@ -491,6 +523,20 @@ export function buildScriptView(
       const rendered = renderPrompt(d, callLogById.get(String(d.id)));
       calls.push({ ...d, fileId: file.id, filename: file.filename, startS: t, endS: t + dur, summary: firstSentence(prompt), renderedPrompt: rendered.text, renderSource: rendered.source });
       t += dur;
+    }
+  }
+
+  const keyframes: KeyframeView[] = [];
+  for (const { docs } of parsed) {
+    for (const d of docs) {
+      if (d.kind !== "keyframe") continue;
+      keyframes.push({
+        id: String(d.id ?? ""),
+        role: d.role === "last" ? "last" : "first",
+        forCall: asStr(d.for_call),
+        madeFrom: asStrArr(d.made_from),
+        contains: asStrArr(d.contains),
+      });
     }
   }
 
@@ -580,6 +626,7 @@ export function buildScriptView(
     docs: docs.length,
     calls: docs.filter((d) => d.kind === "call").length,
     entities: docs.filter((d) => d.kind === "character" || d.kind === "location" || d.kind === "prop" || d.kind === "composite").length,
+    keyframes: docs.filter((d) => d.kind === "keyframe").length,
   }));
 
   const targetS = typeof meta?.target_runtime_s === "number" ? meta.target_runtime_s : null;
@@ -590,6 +637,7 @@ export function buildScriptView(
     scenes: scenes.length,
     shots: shots.length,
     calls: calls.length,
+    keyframes: keyframes.length,
   };
 
   return {
@@ -597,22 +645,25 @@ export function buildScriptView(
     files: viewFiles,
     meta,
     entities,
+    keyframes,
     shots,
     calls,
     scenes,
     index,
-    checks: runChecks(meta, entities, shots, calls, parsed.map((p) => ({ fileId: p.file.id, filename: p.file.filename, docs: p.docs }))),
+    checks: runChecks(meta, entities, keyframes, shots, calls, parsed.map((p) => ({ fileId: p.file.id, filename: p.file.filename, docs: p.docs }))),
     totals,
+    links,
   };
 }
 
 // ---------- Part C lint checks that can be decided from the data alone ----------
 
-const LOCK_FIELDS = ["name", "locked_date", "base_clip_s", "extend_increment_s", "chain_soft_s", "chain_hard_s", "chain_cap_s", "max_reference_images", "max_prompt_chars"];
+const LOCK_FIELDS = ["name", "locked_date", "base_clip_s", "extend_increment_s", "chain_soft_s", "chain_hard_s", "chain_cap_s", "max_reference_images", "max_prompt_chars", "words_per_sec", "extend_carries_audio", "extend_returns", "supports_negative_prompt", "frame_takes_refs", "frame_takes_last_frame"];
 
 function runChecks(
   meta: Record<string, unknown> | null,
   entities: EntityView[],
+  keyframes: KeyframeView[],
   shots: ShotView[],
   calls: CallView[],
   files: { fileId: string; filename: string; docs: ScriptDoc[] }[],
@@ -639,6 +690,10 @@ function runChecks(
     if (missing.length) {
       checks.push({ code: "model_lock_incomplete", severity: "error", message: `model_lock is missing ${missing.join(", ")}` });
     }
+    // Frame calls take no reference images (first/last frame only).
+    if (lock.frame_takes_refs !== false) {
+      checks.push({ code: "frame_takes_refs", severity: "error", message: "model_lock.frame_takes_refs must be false in this version (first/last frame only)" });
+    }
   }
 
   const entityIds = new Set(entities.map((e) => e.id));
@@ -646,6 +701,8 @@ function runChecks(
   const callIds = new Set(callById.keys());
   const shotById = new Map(shots.map((s) => [s.id, s]));
   const compositeIds = new Set(entities.filter((e) => e.kind === "composite").map((e) => e.id));
+  const keyframeById = new Map(keyframes.map((k) => [k.id, k]));
+  const keyframeIds = new Set(keyframeById.keys());
 
   const seen = new Map<string, number>();
   for (const { docs } of files) {
@@ -709,6 +766,48 @@ function runChecks(
       }
       if (!e.adhoc && e.usedInShots.length < 2) {
         checks.push({ code: "composite_unused", severity: "warn", entityId: e.id, message: `${e.id} is used in fewer than 2 shots` });
+      }
+    }
+  }
+
+  // 2b. Keyframes: wired to a real frame-to-video call, members exist and
+  // their locks are pasted verbatim into the keyframe's image prompt.
+  const kfDocs = new Map<string, ScriptDoc>();
+  for (const { docs } of files) {
+    for (const d of docs) {
+      if (d.kind === "keyframe" && typeof d.id === "string") kfDocs.set(d.id, d);
+    }
+  }
+  for (const k of keyframes) {
+    for (const m of k.madeFrom) {
+      if (!entityIds.has(m)) {
+        checks.push({ code: "unknown_entity", severity: "error", message: `${k.id} made_from undefined ${m}` });
+      }
+    }
+    for (const m of k.contains) {
+      if (!k.madeFrom.includes(m)) {
+        checks.push({ code: "keyframe_contains", severity: "error", message: `${k.id} contains ${m} outside its made_from` });
+      }
+      const member = byId.get(m);
+      const kimg = norm(asStr(kfDocs.get(k.id)?.image_prompt));
+      if (member?.identity && !kimg.includes(norm(member.identity))) {
+        checks.push({ code: "image_prompt_drift", severity: "error", message: `${k.id} image_prompt does not contain ${m}'s identity verbatim` });
+      }
+      if (member?.sideDetail && !kimg.includes(norm(member.sideDetail))) {
+        checks.push({ code: "image_prompt_drift", severity: "error", message: `${k.id} image_prompt does not contain ${m}'s side_detail verbatim` });
+      }
+    }
+    const target = callById.get(k.forCall);
+    if (!target) {
+      checks.push({ code: "keyframe_target", severity: "error", message: `${k.id} for_call ${k.forCall} matches no call` });
+    } else if (target.mode !== "frame-to-video") {
+      checks.push({ code: "keyframe_target", severity: "error", callId: String(target.id), message: `${k.id} targets ${String(target.id)}, which is not frame-to-video` });
+    } else {
+      const uses = k.role === "last"
+        ? asStr(target.end_frame) === k.id
+        : asStr(target.seed_from) === k.id;
+      if (!uses) {
+        checks.push({ code: "keyframe_target", severity: "error", callId: String(target.id), message: `${k.id} (${k.role}) is not that call's ${k.role === "last" ? "end_frame" : "seed_from"}` });
       }
     }
   }
@@ -829,7 +928,7 @@ function runChecks(
         }
       }
     } else {
-      // Opening calls (reference-to-video / frame-to-video).
+      // Opening calls (reference-to-video / frame-to-video / text-to-video).
       if (dur !== base) {
         checks.push({ code: "call_duration", severity: "error", callId: id, message: `${id} opening dur is ${dur}s (lock says ${base}s)` });
       }
@@ -840,9 +939,11 @@ function runChecks(
         checks.push({ code: "opener_with_chain", severity: "error", callId: id, message: `${id} opens the chain but sets chained_from/continues_from` });
       }
       if (c.mode === "frame-to-video") {
+        // Seeds are the previous final call or an authored keyframe —
+        // composites can no longer seed a frame.
         if (empty(c.seed_from)) {
           checks.push({ code: "missing_seed_from", severity: "error", callId: id, message: `${id} is frame-to-video but names no seed_from` });
-        } else if (!callIds.has(String(c.seed_from)) && !compositeIds.has(String(c.seed_from))) {
+        } else if (!callIds.has(String(c.seed_from)) && !keyframeIds.has(String(c.seed_from))) {
           checks.push({ code: "dangling_chain", severity: "error", callId: id, message: `${id} seeds from unknown ${String(c.seed_from)}` });
         }
         if (empty(c.anchor_from)) {
@@ -850,11 +951,65 @@ function runChecks(
         } else if (!prompt.includes("{{anchor_from}}")) {
           checks.push({ code: "placeholder_missing", severity: "error", callId: id, message: `${id} prompt never renders its {{anchor_from}}` });
         }
+        // Frame calls take no reference images (first/last frame only).
+        if (refs.length > 0) {
+          checks.push({ code: "frame_has_references", severity: "error", callId: id, message: `${id} is frame-to-video but carries ${refs.length} reference(s) — first/last frame only` });
+        }
+        if (!empty(c.end_frame)) {
+          const kf = keyframeById.get(String(c.end_frame));
+          if (!kf) {
+            checks.push({ code: "end_frame_unknown", severity: "error", callId: id, message: `${id} end_frame ${String(c.end_frame)} matches no keyframe` });
+          } else {
+            if (kf.role !== "last") {
+              checks.push({ code: "end_frame_role", severity: "error", callId: id, message: `${id} end_frame ${kf.id} is a ${kf.role} keyframe, not last` });
+            }
+            if (empty(c.seed_from)) {
+              checks.push({ code: "end_frame_without_seed", severity: "error", callId: id, message: `${id} sets end_frame with no seed_from (a last frame never appears without a first)` });
+            }
+            if (empty(c.ends_at)) {
+              checks.push({ code: "end_frame_without_ends", severity: "error", callId: id, message: `${id} end_frame ${kf.id} must match ends_at` });
+            }
+          }
+        }
+        if (!prompt.includes("FRAMES:")) {
+          checks.push({ code: "frames_line_missing", severity: "warn", callId: id, message: `${id} prompt has no FRAMES line describing the first/last frame` });
+        }
+        // Cast absent from both frames with no low_consistency flag (warn).
+        if (asStr(c.content_risk) !== "low_consistency") {
+          const seedChars = keyframeById.has(String(c.seed_from))
+            ? (keyframeById.get(String(c.seed_from))?.contains ?? [])
+            : asStrArr(callById.get(String(c.seed_from))?.characters);
+          const endChars = !empty(c.end_frame) && keyframeById.has(String(c.end_frame))
+            ? (keyframeById.get(String(c.end_frame))?.contains ?? [])
+            : seedChars;
+          const framed = new Set([...seedChars, ...endChars]);
+          for (const m of asStrArr(c.characters)) {
+            if (!framed.has(m)) {
+              checks.push({ code: "frame_uncovered_cast", severity: "warn", callId: id, message: `${id} shows ${m}, absent from the first and last frame — flag low_consistency or pin a frame` });
+            }
+          }
+        }
       } else {
         if (!empty(c.seed_from)) {
           checks.push({ code: "seed_off_mode", severity: "error", callId: id, message: `${id} sets seed_from outside frame-to-video` });
         }
-        // reference-to-video cut inside a scene with no anchor_from (warn).
+        if (!empty(c.end_frame)) {
+          checks.push({ code: "end_frame_off_mode", severity: "error", callId: id, message: `${id} sets end_frame outside frame-to-video` });
+        }
+        if (c.mode === "text-to-video") {
+          if (refs.length > 0) {
+            checks.push({ code: "frame_has_references", severity: "error", callId: id, message: `${id} is text-to-video but carries ${refs.length} reference(s)` });
+          }
+          // Text is the fallback: warn when a reference route was available.
+          const shot = shotById.get(c.shot as number);
+          const demand = (shot ? [...shot.characters, ...shot.props] : []).length + (shot?.location ? 1 : 0);
+          if (asStr(c.content_risk) !== "low_consistency") {
+            checks.push({ code: "text_expected_low_consistency", severity: "warn", callId: id, message: `${id} is text-to-video without low_consistency content risk` });
+          } else if (demand <= maxRefs) {
+            checks.push({ code: "text_with_free_slots", severity: "warn", callId: id, message: `${id} is text-to-video but slot demand ${demand} fits ${maxRefs} reference(s)` });
+          }
+        }
+        // reference-to-video / text-to-video cut inside a scene with no anchor_from (warn).
         if (empty(c.anchor_from)) {
           const scene = shotById.get(c.shot as number)?.scene;
           if (scene && scene === prevSceneByShot.get(c.shot as number)) {
@@ -906,6 +1061,8 @@ function runChecks(
   }
 
   // 8. Files: chains never cross a file boundary; files stay small.
+  // Keyframe seeds are the exception: keyframes live in the bible while the
+  // chunk that opens on them ships separately by design.
   const fileOf = new Map<string, string>();
   for (const { fileId, docs } of files) {
     for (const d of docs) {
@@ -914,7 +1071,7 @@ function runChecks(
   }
   for (const c of calls) {
     for (const target of [c.chained_from, c.seed_from]) {
-      if (!empty(target) && typeof target === "string" && !compositeIds.has(target)) {
+      if (!empty(target) && typeof target === "string" && !compositeIds.has(target) && !keyframeIds.has(target)) {
         const other = fileOf.get(target);
         if (other && other !== c.fileId) {
           checks.push({ code: "chain_split_across_files", severity: "error", callId: String(c.id), message: `${String(c.id)} links to ${target} in another file — never split mid-chain` });
@@ -933,8 +1090,8 @@ function runChecks(
   const totals = (meta?.totals ?? {}) as Record<string, unknown>;
   const sceneCount = new Set(shots.map((s) => s.scene)).size;
   if (meta) {
-    if (totals.shots !== shots.length || totals.scenes !== sceneCount || totals.calls !== calls.length) {
-      checks.push({ code: "totals_mismatch", severity: "error", message: `totals ${totals.shots}/${totals.scenes}/${totals.calls} (shots/scenes/calls) don't match ${shots.length}/${sceneCount}/${calls.length}` });
+    if (totals.shots !== shots.length || totals.scenes !== sceneCount || totals.calls !== calls.length || totals.keyframes !== keyframes.length) {
+      checks.push({ code: "totals_mismatch", severity: "error", message: `totals ${totals.shots}/${totals.scenes}/${totals.calls}/${totals.keyframes} (shots/scenes/calls/keyframes) don't match ${shots.length}/${sceneCount}/${calls.length}/${keyframes.length}` });
     }
     const cost = (meta.cost_estimate ?? {}) as Record<string, unknown>;
     if (typeof cost.calls_raw === "number" && cost.calls_raw !== calls.length) {
@@ -944,8 +1101,8 @@ function runChecks(
     if (typeof cost.calls_projected === "number" && cost.calls_projected !== Math.ceil(calls.length / rate)) {
       checks.push({ code: "calls_projected_mismatch", severity: "error", message: `calls_projected should be ceil(${calls.length}/${rate}) = ${Math.ceil(calls.length / rate)}` });
     }
-    if (typeof cost.asset_images_raw === "number" && cost.asset_images_raw !== 3 * entities.length) {
-      checks.push({ code: "asset_images_mismatch", severity: "warn", message: `asset_images_raw should be 3 × ${entities.length} entities` });
+    if (typeof cost.asset_images_raw === "number" && cost.asset_images_raw !== 3 * (entities.length + keyframes.length)) {
+      checks.push({ code: "asset_images_mismatch", severity: "warn", message: `asset_images_raw should be 3 × ${entities.length + keyframes.length} entities + keyframes` });
     }
     if (typeof meta.target_runtime_s === "number" && meta.target_runtime_s > 0) {
       const planned = shots.reduce((a, s) => a + s.plannedS, 0);
@@ -967,9 +1124,10 @@ function runChecks(
   const callLogs = files.flatMap((f) => f.docs).filter((d) => d.kind === "call_log");
   for (const l of assetLogs) {
     const e = byId.get(String(l.id));
-    if (!e) {
-      checks.push({ code: "log_unknown_id", severity: "error", message: `asset_log ${String(l.id)} matches no entity` });
-    } else if (typeof l.lock_version === "number" && e.lockVersion != null && l.lock_version !== e.lockVersion) {
+    const k = keyframeById.get(String(l.id));
+    if (!e && !k) {
+      checks.push({ code: "log_unknown_id", severity: "error", message: `asset_log ${String(l.id)} matches no entity or keyframe` });
+    } else if (e && typeof l.lock_version === "number" && e.lockVersion != null && l.lock_version !== e.lockVersion) {
       checks.push({ code: "log_lock_stale", severity: "error", entityId: e.id, message: `${e.id} relocked to v${e.lockVersion} but the asset log pins v${l.lock_version} — regenerate` });
     }
   }
@@ -1010,6 +1168,14 @@ function runChecks(
           checks.push({ code: "log_missing_asset", severity: "warn", callId: id, message: `${id} accepted while ${m} has no asset_log` });
         }
       }
+      // Frame calls need their keyframes logged too.
+      if (call.mode === "frame-to-video") {
+        for (const kf of [asStr(call.seed_from), asStr(call.end_frame)].filter((s) => keyframeIds.has(s))) {
+          if (!assetLogs.some((a) => String(a.id) === kf)) {
+            checks.push({ code: "log_missing_asset", severity: "warn", callId: id, message: `${id} accepted while keyframe ${kf} has no asset_log` });
+          }
+        }
+      }
     }
   }
   return checks;
@@ -1020,3 +1186,88 @@ export function checkFileSize(text: string): string | null {
 }
 
 export const MAX_COMMIT_FILES = 12;
+
+/** Filenames are display-only: strip paths, cap length. */
+export function cleanFilename(name: unknown): string {
+  const base = String(name ?? "pasted.yaml").split(/[\\/]/).pop()?.trim() || "pasted.yaml";
+  return base.slice(0, 200);
+}
+
+/** Shared parse preamble: empty/oversize/invalid files are blocked with a
+ *  doc number + error, before any duplicate/update/new decision. */
+export function stageFile(item: { filename?: unknown; text?: unknown }):
+  | { filename: string; text: string; docs: ScriptDoc[] }
+  | { filename: string; error: DocError } {
+  const filename = cleanFilename(item?.filename);
+  const text = typeof item?.text === "string" ? item.text : "";
+  const tooBig = checkFileSize(text);
+  if (!text.trim() || tooBig) {
+    return { filename, error: { doc: 0, message: tooBig ?? "file is empty" } };
+  }
+  const { docs, error } = parseScriptText(text);
+  if (error) return { filename, error };
+  return { filename, text, docs };
+}
+
+export interface StoredFile {
+  id: string;
+  script_id: string;
+  filename: string;
+  raw_text: string;
+  raw_hash: string;
+  canon_hash: string;
+}
+
+/**
+ * Preview classification without saving. Per file → duplicate (exact or
+ * formatting-only) | update (≥60% shared doc keys, with field diffs) |
+ * new | invalid (blocked, with doc number + error).
+ */
+export function classifyFiles(stored: StoredFile[], incoming: { filename?: unknown; text?: unknown }[]) {
+  // Parse each stored file once: hashes decide duplicates, keys decide updates.
+  const existing = stored.map((f) => {
+    const docs = parseScriptText(f.raw_text).docs;
+    return { ...f, docs, keys: docKeys(docs) };
+  });
+  const out = [];
+  for (const item of incoming) {
+    const staged = stageFile(item);
+    if ("error" in staged) {
+      out.push({ filename: staged.filename, status: "invalid" as const, error: staged.error });
+      continue;
+    }
+    const { filename, text, docs } = staged;
+    const rh = rawHash(text);
+    const ch = canonHash(text) as string;
+    const exact = existing.find((f) => f.raw_hash === rh);
+    const canonical = exact ?? existing.find((f) => f.canon_hash === ch);
+    if (canonical) {
+      out.push({
+        filename, role: fileRole(docs), status: "duplicate" as const, docCount: docs.length,
+        match: { scriptId: canonical.script_id, fileId: canonical.id, filename: canonical.filename, kind: canonical.raw_hash === rh ? "exact" : "canonical" },
+      });
+      continue;
+    }
+    const keys = docKeys(docs);
+    let best: (typeof existing)[number] | null = null;
+    let bestShared = 0;
+    for (const f of existing) {
+      const shared = [...keys].filter((k) => f.keys.has(k)).length;
+      const ratio = keys.size ? shared / keys.size : 0;
+      if (ratio > bestShared) {
+        bestShared = ratio;
+        best = f;
+      }
+    }
+    if (best && bestShared >= 0.6) {
+      out.push({
+        filename, role: fileRole(docs), status: "update" as const, docCount: docs.length,
+        match: { scriptId: best.script_id, fileId: best.id, filename: best.filename, kind: "overlap", shared: Math.round(bestShared * 100) },
+        changes: diffDocs(best.docs, docs),
+      });
+      continue;
+    }
+    out.push({ filename, role: fileRole(docs), status: "new" as const, docCount: docs.length });
+  }
+  return out;
+}

@@ -403,6 +403,18 @@ export const api = {
 
   deleteScriptFile: (id: string, fileId: string) =>
     req<{ deleted: boolean }>(`/scripts/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
+
+  linkScriptEntity: (id: string, body: { entityId: string; elementId: string }) =>
+    req<{ linked: boolean }>(`/scripts/${encodeURIComponent(id)}/links/entity`, { method: "PUT", body: JSON.stringify(body) }),
+
+  unlinkScriptEntity: (id: string, entityId: string) =>
+    req<{ deleted: boolean }>(`/scripts/${encodeURIComponent(id)}/links/entity/${encodeURIComponent(entityId)}`, { method: "DELETE" }),
+
+  linkScriptCall: (id: string, body: { callId: string; videoId: string }) =>
+    req<{ linked: boolean }>(`/scripts/${encodeURIComponent(id)}/links/call`, { method: "PUT", body: JSON.stringify(body) }),
+
+  unlinkScriptCall: (id: string, callId: string) =>
+    req<{ deleted: boolean }>(`/scripts/${encodeURIComponent(id)}/links/call/${encodeURIComponent(callId)}`, { method: "DELETE" }),
 };
 
 export function apiBase(): string {

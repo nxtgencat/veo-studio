@@ -1,4 +1,4 @@
-// Script tab: client types (mirror the server v5 view) + display metadata.
+// Script tab: client types (mirror the server view) + display metadata.
 // All data comes from the API via lib/api.ts — nothing is mocked.
 
 export interface ScriptSummary {
@@ -52,6 +52,14 @@ export interface ScriptShot {
   endS: number;
 }
 
+export interface ScriptKeyframe {
+  id: string;
+  role: "first" | "last";
+  forCall: string;
+  madeFrom: string[];
+  contains: string[];
+}
+
 export interface ScriptCall {
   id: string;
   shot: number;
@@ -64,6 +72,7 @@ export interface ScriptCall {
   dur: number;
   chained_from: string | null;
   seed_from: string | null;
+  end_frame: string | null;
   continues_from: string | null;
   anchor_from: string | null;
   ends_at: string | null;
@@ -88,17 +97,24 @@ export interface ScriptCheck {
   message: string;
 }
 
+export interface ScriptLinks {
+  entities: Record<string, string>;
+  calls: Record<string, string>;
+}
+
 export interface ScriptDetail {
   script: { id: string; title: string; updatedAt: string };
-  files: { id: string; filename: string; role: string; docs: number; calls: number; entities: number }[];
+  files: { id: string; filename: string; role: string; docs: number; calls: number; entities: number; keyframes: number }[];
   meta: Record<string, unknown> | null;
   entities: ScriptEntity[];
+  keyframes: ScriptKeyframe[];
   shots: ScriptShot[];
   calls: ScriptCall[];
   scenes: { n: number; title: string; shotIds: number[]; callIds: string[]; plannedS: number; footageS: number; startS: number; endS: number }[];
   index: Record<string, { calls: string[]; shots: number[] }>;
   checks: ScriptCheck[];
-  totals: { footageS: number; plannedS: number; targetS: number | null; scenes: number; shots: number; calls: number };
+  totals: { footageS: number; plannedS: number; targetS: number | null; scenes: number; shots: number; calls: number; keyframes: number };
+  links: ScriptLinks;
 }
 
 export interface PreviewFile {
@@ -135,7 +151,8 @@ export function shortName(name: string): string {
 export const MODE_META: Record<string, { label: string; tip: string; dot: string; tone: "draft" | "info" | "ok" | "pending" }> = {
   "reference-to-video": { label: "Reference", tip: "A hard start using up to 3 reference images.", dot: "#2B5FB8", tone: "info" },
   extend: { label: "Extend", tip: "Continues the same shot. No new references.", dot: "#2A8F58", tone: "ok" },
-  "frame-to-video": { label: "Re-anchor", tip: "Opens a new chain off a hard cut, seeded by a last frame or composite.", dot: "#B8790E", tone: "pending" },
+  "frame-to-video": { label: "Re-anchor", tip: "Opens a new chain off a hard cut: first frame required, optional last frame, no references.", dot: "#B8790E", tone: "pending" },
+  "text-to-video": { label: "Text", tip: "Prompt only — no images. Fallback with low consistency.", dot: "#6B7280", tone: "draft" },
 };
 
 export const CHAIN_RISK_META: Record<string, { tip: string; tone: "pending" | "danger" }> = {

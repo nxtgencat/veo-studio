@@ -524,6 +524,8 @@ export const useStudio = create<StudioState>()((set, get) => {
       fn(draft);
       // Mode switch drops other modes' slots: they're invisible in the
       // composer, so stale values must never block the next Generate.
+      // Advanced settings reset too — a seed / person rule / negative tuned
+      // for one mode must not leak silently into another.
       if (draft.gen.mode !== current.gen.mode) {
         if (draft.gen.mode !== "i2v") draft.gen.image = "";
         if (draft.gen.mode !== "frames") {
@@ -532,6 +534,9 @@ export const useStudio = create<StudioState>()((set, get) => {
         }
         if (draft.gen.mode !== "r2v") draft.gen.refs = [];
         if (draft.gen.mode !== "extend") draft.gen.extendVideo = "";
+        draft.gen.seed = "";
+        draft.gen.person = "allow_adult";
+        draft.gen.negativePrompt = "";
       }
       const m = modelOf(draft.gen.model);
       const resList = m.res;
@@ -645,6 +650,8 @@ export const useStudio = create<StudioState>()((set, get) => {
         }
         await get().refreshActive();
         // Fresh composer for the next shot: clear prompt + inputs, keep config.
+        // Advanced settings clear too — seed / person / negative belong to
+        // the request just used, like the prompt.
         get().updateActive((d) => {
           d.gen.prompt = "";
           d.gen.image = "";
@@ -652,6 +659,9 @@ export const useStudio = create<StudioState>()((set, get) => {
           d.gen.last = "";
           d.gen.refs = [];
           d.gen.extendVideo = "";
+          d.gen.seed = "";
+          d.gen.person = "allow_adult";
+          d.gen.negativePrompt = "";
         });
         return { ok: true, count };
       } catch (e) {

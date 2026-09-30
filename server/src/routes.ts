@@ -19,12 +19,10 @@ import {
   MAX_COMMIT_FILES,
   buildScriptView,
   canonHash,
-  checkFileSize,
-  diffDocs,
-  docKeys,
-  fileRole,
+  classifyFiles,
   parseScriptText,
   rawHash,
+  stageFile,
   type ScriptDoc,
 } from "./scripts.ts";
 import { logger } from "./logger.ts";
@@ -142,6 +140,8 @@ app.delete("/projects/:id", async (c) => {
   db.query("DELETE FROM project_settings WHERE project_id=?").run(pid);
   const scriptIds = db.query("SELECT id FROM scripts WHERE project_id=?").all(pid) as { id: string }[];
   for (const s of scriptIds) {
+    db.query("DELETE FROM script_entity_links WHERE script_id=?").run(s.id);
+    db.query("DELETE FROM script_call_links WHERE script_id=?").run(s.id);
     db.query("DELETE FROM script_files WHERE script_id=?").run(s.id);
   }
   db.query("DELETE FROM scripts WHERE project_id=?").run(pid);
@@ -207,7 +207,9 @@ app.patch("/elements/:id", async (c) => {
 });
 
 app.delete("/elements/:id", (c) => {
-  const r = getDb().query("DELETE FROM elements WHERE id=?").run(c.req.param("id"));
+  const db = getDb();
+  db.query("DELETE FROM script_entity_links WHERE element_id=?").run(c.req.param("id"));
+  const r = db.query("DELETE FROM elements WHERE id=?").run(c.req.param("id"));
   if (!r.changes) return err(c, 404, "ELEMENT_NOT_FOUND", "No such element");
   return c.json({ deleted: true });
 });
@@ -596,6 +598,7 @@ app.delete("/library/:id", async (c) => {
   const db = getDb();
   const row = db.query("SELECT video_url FROM library WHERE id=?").get(c.req.param("id")) as { video_url: string } | null;
   if (!row) return err(c, 404, "VIDEO_NOT_FOUND", "No such video");
+  db.query("DELETE FROM script_call_links WHERE video_id=?").run(c.req.param("id"));
   db.query("DELETE FROM library WHERE id=?").run(c.req.param("id"));
   // Drop the server-hosted file too (GCS objects are left alone).
   const mid = mediaIdFromUrl(row.video_url);
@@ -704,7 +707,7 @@ app.delete("/backups/:id", (c) => {
   return c.json({ deleted: true });
 });
 
-// ---------- scripts (skill-v5 YAML packages: raw stored verbatim, derived on read) ----------
+// ---------- scripts (YAML packages: raw stored verbatim, derived on read) ----------
 type ScriptFileRow = { id: string; script_id: string; filename: string; raw_text: string; raw_hash: string; canon_hash: string; created_at: string };
 
 function scriptFilesOf(scriptId: string): ScriptFileRow[] {
@@ -715,9 +718,23 @@ function scriptBelongs(scriptId: string, projectId: string): boolean {
   return !!getDb().query("SELECT id FROM scripts WHERE id=? AND project_id=?").get(scriptId, projectId);
 }
 
-function cleanFilename(name: unknown): string {
-  const base = String(name ?? "pasted.yaml").split(/[\\/]/).pop()?.trim() || "pasted.yaml";
-  return base.slice(0, 200);
+/** Manual composer links for one script: entity → element, call → video. */
+function scriptLinksOf(scriptId: string): { entities: Record<string, string>; calls: Record<string, string> } {
+  const db = getDb();
+  const entities: Record<string, string> = {};
+  for (const r of db.query("SELECT entity_id, element_id FROM script_entity_links WHERE script_id=?").all(scriptId) as { entity_id: string; element_id: string }[]) {
+    entities[r.entity_id] = r.element_id;
+  }
+  const calls: Record<string, string> = {};
+  for (const r of db.query("SELECT call_id, video_id FROM script_call_links WHERE script_id=?").all(scriptId) as { call_id: string; video_id: string }[]) {
+    calls[r.call_id] = r.video_id;
+  }
+  return { entities, calls };
+}
+
+function scriptProjectOf(scriptId: string): string | null {
+  const row = getDb().query("SELECT project_id FROM scripts WHERE id=?").get(scriptId) as { project_id: string } | null;
+  return row?.project_id ?? null;
 }
 
 app.get("/projects/:id/scripts", (c) => {
@@ -764,58 +781,7 @@ app.post("/projects/:id/scripts/preview", async (c) => {
       : (db.query(
         "SELECT f.*, s.title AS script_title FROM script_files f JOIN scripts s ON s.id=f.script_id WHERE s.project_id=? ORDER BY f.created_at",
       ).all(pid) as ScriptFileRow[]);
-  // Parse each stored file once: hashes decide duplicates, keys decide updates.
-  const existing = existingRows.map((f) => {
-    const docs = parseScriptText(f.raw_text).docs;
-    return { ...f, docs, keys: docKeys(docs) };
-  });
-  const out = [];
-  for (const item of incoming.slice(0, MAX_COMMIT_FILES)) {
-    const filename = cleanFilename(item?.filename);
-    const text = typeof item?.text === "string" ? item.text : "";
-    const tooBig = checkFileSize(text);
-    if (!text.trim() || tooBig) {
-      out.push({ filename, status: "invalid", error: { doc: 0, message: tooBig ?? "file is empty" } });
-      continue;
-    }
-    const { docs, error } = parseScriptText(text);
-    if (error) {
-      out.push({ filename, status: "invalid", error });
-      continue;
-    }
-    const rh = rawHash(text);
-    const ch = canonHash(text) as string;
-    const exact = existing.find((f) => f.raw_hash === rh);
-    const canonical = exact ?? existing.find((f) => f.canon_hash === ch);
-    if (canonical) {
-      out.push({
-        filename, role: fileRole(docs), status: "duplicate", docCount: docs.length,
-        match: { scriptId: canonical.script_id, fileId: canonical.id, filename: canonical.filename, kind: canonical.raw_hash === rh ? "exact" : "canonical" },
-      });
-      continue;
-    }
-    const keys = docKeys(docs);
-    let best: (typeof existing)[number] | null = null;
-    let bestShared = 0;
-    for (const f of existing) {
-      const shared = [...keys].filter((k) => f.keys.has(k)).length;
-      const ratio = keys.size ? shared / keys.size : 0;
-      if (ratio > bestShared) {
-        bestShared = ratio;
-        best = f;
-      }
-    }
-    if (best && bestShared >= 0.6) {
-      out.push({
-        filename, role: fileRole(docs), status: "update", docCount: docs.length,
-        match: { scriptId: best.script_id, fileId: best.id, filename: best.filename, kind: "overlap", shared: Math.round(bestShared * 100) },
-        changes: diffDocs(best.docs, docs),
-      });
-      continue;
-    }
-    out.push({ filename, role: fileRole(docs), status: "new", docCount: docs.length });
-  }
-  return c.json({ files: out });
+  return c.json({ files: classifyFiles(existingRows, incoming.slice(0, MAX_COMMIT_FILES)) });
 });
 
 /**
@@ -838,16 +804,12 @@ app.post("/projects/:id/scripts/commit", async (c) => {
   for (const item of incoming.slice(0, MAX_COMMIT_FILES)) {
     const action = item?.action === "replace" || item?.action === "skip" ? item.action : "add";
     if (action === "skip") continue;
-    const filename = cleanFilename(item?.filename);
-    const text = typeof item?.text === "string" ? item.text : "";
-    const tooBig = checkFileSize(text);
-    if (!text.trim() || tooBig) {
-      return err(c, 422, "SCRIPT_INVALID", `${filename}: ${tooBig ?? "file is empty"}`, { filename, doc: 0 });
+    const preparsed = stageFile(item);
+    if ("error" in preparsed) {
+      const { filename, error } = preparsed;
+      return err(c, 422, "SCRIPT_INVALID", `${filename}${error.doc ? ` doc ${error.doc}` : ""}: ${error.message}`, { filename, ...error });
     }
-    const { docs, error } = parseScriptText(text);
-    if (error) {
-      return err(c, 422, "SCRIPT_INVALID", `${filename} doc ${error.doc}: ${error.message}`, { filename, ...error });
-    }
+    const { filename, text, docs } = preparsed;
     const targetFileId = typeof item?.targetFileId === "string" ? item.targetFileId : null;
     if (action === "replace") {
       const target = targetFileId ? (db.query("SELECT * FROM script_files WHERE id=?").get(targetFileId) as ScriptFileRow | null) : null;
@@ -896,7 +858,7 @@ app.get("/scripts/:id", (c) => {
   const row = getDb().query("SELECT * FROM scripts WHERE id=?").get(c.req.param("id")) as any;
   if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
   const files = scriptFilesOf(row.id).map((f) => ({ id: f.id, filename: f.filename, raw: f.raw_text }));
-  return c.json(buildScriptView({ id: row.id, title: row.title, updatedAt: row.updated_at }, files));
+  return c.json(buildScriptView({ id: row.id, title: row.title, updatedAt: row.updated_at }, files, scriptLinksOf(row.id)));
 });
 
 app.get("/scripts/:id/raw", (c) => {
@@ -912,6 +874,8 @@ app.delete("/scripts/:id", (c) => {
   const db = getDb();
   const row = db.query("SELECT id FROM scripts WHERE id=?").get(c.req.param("id")) as { id: string } | null;
   if (!row) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  db.query("DELETE FROM script_entity_links WHERE script_id=?").run(row.id);
+  db.query("DELETE FROM script_call_links WHERE script_id=?").run(row.id);
   db.query("DELETE FROM script_files WHERE script_id=?").run(row.id);
   db.query("DELETE FROM scripts WHERE id=?").run(row.id);
   return c.json({ deleted: true });
@@ -924,8 +888,67 @@ app.delete("/scripts/:id/files/:fileId", (c) => {
   const r = db.query("DELETE FROM script_files WHERE id=? AND script_id=?").run(c.req.param("fileId"), row.id);
   if (!r.changes) return err(c, 404, "SCRIPT_FILE_NOT_FOUND", "No such file in this script");
   const left = db.query("SELECT id FROM script_files WHERE script_id=? LIMIT 1").get(row.id);
-  if (!left) db.query("DELETE FROM scripts WHERE id=?").run(row.id);
-  else db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), row.id);
+  if (!left) {
+    db.query("DELETE FROM script_entity_links WHERE script_id=?").run(row.id);
+    db.query("DELETE FROM script_call_links WHERE script_id=?").run(row.id);
+    db.query("DELETE FROM scripts WHERE id=?").run(row.id);
+  } else db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), row.id);
+  return c.json({ deleted: true });
+});
+
+// ---------- script composer links (entity → element, call → video) ----------
+// Manual wiring so a call's Generate button loads its refs / source video.
+// Links are per script; element/video must belong to the script's project.
+
+const entityLinkSchema = z.object({
+  entityId: z.string().min(1).max(20),
+  elementId: z.string().min(1).max(64),
+});
+
+const callLinkSchema = z.object({
+  callId: z.string().min(1).max(20),
+  videoId: z.string().min(1).max(64),
+});
+
+app.put("/scripts/:id/links/entity", async (c) => {
+  const sid = c.req.param("id");
+  const pid = scriptProjectOf(sid);
+  if (!pid) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  const parsed = entityLinkSchema.safeParse(await readJson(c));
+  if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid link", zodDetails(parsed.error));
+  const db = getDb();
+  const el = db.query("SELECT id FROM elements WHERE id=? AND project_id=?").get(parsed.data.elementId, pid) as { id: string } | null;
+  if (!el) return err(c, 404, "ELEMENT_NOT_FOUND", "No such element in this project");
+  db.query("INSERT OR REPLACE INTO script_entity_links (script_id, entity_id, element_id, created_at) VALUES (?,?,?,?)").run(sid, parsed.data.entityId, parsed.data.elementId, nowIso());
+  db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), sid);
+  return c.json({ linked: true });
+});
+
+app.delete("/scripts/:id/links/entity/:entityId", (c) => {
+  const sid = c.req.param("id");
+  if (!scriptProjectOf(sid)) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  getDb().query("DELETE FROM script_entity_links WHERE script_id=? AND entity_id=?").run(sid, c.req.param("entityId"));
+  return c.json({ deleted: true });
+});
+
+app.put("/scripts/:id/links/call", async (c) => {
+  const sid = c.req.param("id");
+  const pid = scriptProjectOf(sid);
+  if (!pid) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  const parsed = callLinkSchema.safeParse(await readJson(c));
+  if (!parsed.success) return err(c, 422, "VALIDATION", "Invalid link", zodDetails(parsed.error));
+  const db = getDb();
+  const v = db.query("SELECT id FROM library WHERE id=? AND project_id=?").get(parsed.data.videoId, pid) as { id: string } | null;
+  if (!v) return err(c, 404, "VIDEO_NOT_FOUND", "No such video in this project");
+  db.query("INSERT OR REPLACE INTO script_call_links (script_id, call_id, video_id, created_at) VALUES (?,?,?,?)").run(sid, parsed.data.callId, parsed.data.videoId, nowIso());
+  db.query("UPDATE scripts SET updated_at=? WHERE id=?").run(nowIso(), sid);
+  return c.json({ linked: true });
+});
+
+app.delete("/scripts/:id/links/call/:callId", (c) => {
+  const sid = c.req.param("id");
+  if (!scriptProjectOf(sid)) return err(c, 404, "SCRIPT_NOT_FOUND", "No such script");
+  getDb().query("DELETE FROM script_call_links WHERE script_id=? AND call_id=?").run(sid, c.req.param("callId"));
   return c.json({ deleted: true });
 });
 

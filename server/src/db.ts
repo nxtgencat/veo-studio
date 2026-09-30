@@ -10,6 +10,7 @@ export function getDb(): Database {
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   db = new Database(file, { create: true });
   db.run("PRAGMA journal_mode = WAL;");
+  db.run("PRAGMA foreign_keys = ON;");
   migrate(db);
   return db;
 }
@@ -136,6 +137,26 @@ export function migrate(d: Database) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_script_files_script ON script_files(script_id);
+    -- Call → composer links: manual wiring from a script call to its render.
+    -- entity links resolve script refs (C/L/P/G) to Elements images for the
+    -- composer; call links resolve an extend/seed source call to its Library
+    -- video so the next call loads its input automatically.
+    CREATE TABLE IF NOT EXISTS script_entity_links (
+      script_id TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+      entity_id TEXT NOT NULL,
+      element_id TEXT NOT NULL REFERENCES elements(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (script_id, entity_id)
+    );
+    CREATE TABLE IF NOT EXISTS script_call_links (
+      script_id TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+      call_id TEXT NOT NULL,
+      video_id TEXT NOT NULL REFERENCES library(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (script_id, call_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_script_entity_links_element ON script_entity_links(element_id);
+    CREATE INDEX IF NOT EXISTS idx_script_call_links_video ON script_call_links(video_id);
   `);
   // Column added after launch — backfill existing databases.
   const cols = d.query("PRAGMA table_info(library)").all() as { name: string }[];
