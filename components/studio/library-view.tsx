@@ -9,7 +9,7 @@ import { expectedDurOf, modelOf } from "@/lib/pricing";
 import { uploadVideoFile } from "@/lib/upload-video";
 import { useStudio } from "@/stores/use-studio";
 import { pushErr, useToasts } from "@/stores/use-ui";
-import { useQueryState } from "@/hooks/use-studio-hooks";
+import { useLibrary, useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
@@ -17,8 +17,7 @@ import { PageHead, SlateEmpty, SlateProgress, SlateSegmented } from "@/component
 import { ModeBadge, StatusBadge, VideoCost, VideoProgress } from "@/components/studio/shared";
 import type { VideoItem } from "@/lib/schemas";
 
-/** One grid card. Memo + stable item refs (store reuses unchanged rows) means
- *  a progress tick re-renders only the rows that actually changed. */
+/** One grid card. Memo: progress ticks re-render only changed rows. */
 const LibraryCard = memo(function LibraryCard({ v, lib, status, source, projectId }: {
   v: VideoItem; lib: VideoItem[]; status: string; source: string; projectId: string;
 }) {
@@ -71,7 +70,9 @@ const LibraryCard = memo(function LibraryCard({ v, lib, status, source, projectI
 export function LibraryView() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
-  const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
+  const exists = useStudio((s) => s.projects.some((p) => p.id === projectId));
+  const name = useStudio((s) => s.projects.find((p) => p.id === projectId)?.name ?? "");
+  const lib = useLibrary(projectId);
   const importVideo = useStudio((s) => s.importVideo);
   const push = useToasts((s) => s.push);
   const { state, set, clear } = useQueryState({ status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all", source: "all" });
@@ -80,14 +81,14 @@ export function LibraryView() {
   const [progress, setProgress] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
-  const models = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.model))], [project?.library]);
-  const reses = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.res))], [project?.library]);
-  const aspects = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.aspect))], [project?.library]);
-  const durs = useMemo(() => [...new Set((project?.library ?? []).map((v) => v.dur))].sort((a, b) => a - b), [project?.library]);
+  const models = useMemo(() => [...new Set(lib.map((v) => v.model))], [lib]);
+  const reses = useMemo(() => [...new Set(lib.map((v) => v.res))], [lib]);
+  const aspects = useMemo(() => [...new Set(lib.map((v) => v.aspect))], [lib]);
+  const durs = useMemo(() => [...new Set(lib.map((v) => v.dur))].sort((a, b) => a - b), [lib]);
 
-  if (!project) return null;
+  if (!exists) return null;
   const mLabel = (id: string) => (id === "import" ? "Upload" : modelOf(id).label);
-  const list = project.library.filter(
+  const list = lib.filter(
     (v) =>
       (state.source === "all" ? true : state.source === "uploaded" ? !!v.imported : !v.imported) &&
       // Model/config facets live on the Generated tab only.
@@ -119,7 +120,7 @@ export function LibraryView() {
       // 200 MB files would spike RAM. Thumb/meta capture runs alongside.
       setProgress(total > 1 ? `${i + 1}/${total} · ${file.name}` : file.name);
       try {
-        const r = await uploadVideoFile(file, importVideo, ctrl.signal, (frac) => {
+        const r = await uploadVideoFile(file, (a) => importVideo(projectId, a), ctrl.signal, (frac) => {
           const pct = Math.round(frac * 100);
           setProgress(total > 1 ? `${i + 1}/${total} · ${pct}%` : `${pct}%`);
         });
@@ -171,7 +172,7 @@ export function LibraryView() {
     <>
       <PageHead
         title="Library"
-        sub={`Every render in ${project.name}. Click a card for player, config, inputs and cost.`}
+        sub={`Every render in ${name}. Click a card for player, config, inputs and cost.`}
         actions={
           <>
             <label className="slate-btn slate-btn-primary slate-btn-sm cursor-pointer">
@@ -210,7 +211,7 @@ export function LibraryView() {
         onChange={(v) => set({ source: v, status: "all", model: "all", res: "all", aspect: "all", dur: "all", audio: "all" })}
       />
 
-      {project.library.length > 0 && state.source === "generated" && (
+      {lib.length > 0 && state.source === "generated" && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           {facet("Status", state.status, state.status === "all" ? "All" : state.status[0]?.toUpperCase() + state.status.slice(1), "status", [["pending", "Pending"], ["success", "Success"], ["failed", "Failed"]])}
           {facet("Model", state.model, state.model === "all" ? "All" : mLabel(state.model), "model", models.map((id) => [id, mLabel(id)] as [string, string]))}
@@ -228,13 +229,13 @@ export function LibraryView() {
             </button>
           )}
           <span className="ml-auto text-[11.5px] text-muted tabular-nums font-mono">
-            {list.length} of {project.library.length}
+            {list.length} of {lib.length}
           </span>
         </div>
       )}
 
       {!list.length ? (
-        !project.library.length ? (
+        !lib.length ? (
           <SlateEmpty
             icon={<Film className="size-6 text-[#1C7247]" />}
             title="No videos here yet"
@@ -260,7 +261,7 @@ export function LibraryView() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 sm:gap-3">
           {list.map((v) => (
-            <LibraryCard key={v.id} v={v} lib={project.library} status={state.status} source={state.source} projectId={projectId} />
+            <LibraryCard key={v.id} v={v} lib={lib} status={state.status} source={state.source} projectId={projectId} />
           ))}
         </div>
       )}

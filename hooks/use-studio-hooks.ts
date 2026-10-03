@@ -2,23 +2,25 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useStudio } from "@/stores/use-studio";
+import { defaultGen, useComposer, useStudio } from "@/stores/use-studio";
+import { buildLibrary, groupElements } from "@/lib/derive";
+import type { GenDraft, Project } from "@/lib/schemas";
 
-/** Poll in-flight server jobs while any render is pending. Replaces the old mock renderer. */
+/** Poll in-flight server jobs while any render is pending. */
 export function useRenderTick() {
-  const pollJobs = useStudio((s) => s.pollJobs);
-  // Raw jobs, not derived projects: boolean stays stable between progress
+  const pollTick = useStudio((s) => s.pollTick);
+  // Raw jobs, not derived views: boolean stays stable between progress
   // ticks, so this hook never re-subscribes the interval on every poll.
   const hasPending = useStudio((s) =>
     s.jobs.some((j) => j.status === "queued" || j.status === "running"),
   );
   useEffect(() => {
     if (!hasPending) return;
-    // pollJobs itself skips hidden tabs + in-flight requests; the
+    // pollTick itself skips hidden tabs + in-flight requests; the
     // visibility listener re-syncs immediately on return instead of waiting
     // out the remainder of the interval.
     const tick = () => {
-      if (!document.hidden) void pollJobs();
+      if (!document.hidden) void pollTick();
     };
     const t = setInterval(tick, 3000);
     document.addEventListener("visibilitychange", tick);
@@ -26,7 +28,7 @@ export function useRenderTick() {
       clearInterval(t);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [hasPending, pollJobs]);
+  }, [hasPending, pollTick]);
 }
 
 /** Hydrate zustand from localStorage once (client-only, avoids SSR mismatch). */
@@ -37,6 +39,50 @@ export function useHydrateStudio() {
     hydrate();
   }, [hydrate]);
   return hydrated;
+}
+
+/**
+ * Derived library for one project, memoized on raw row refs. Recomputes only
+ * when this project's rows (or its youtube overlays) actually change — never
+ * on composer keystrokes or other projects' polls.
+ */
+export function useLibrary(projectId: string): Project["library"] {
+  const videos = useStudio((s) => s.videos);
+  const jobs = useStudio((s) => s.jobs);
+  const elements = useStudio((s) => s.elements);
+  const youtube = useComposer((s) => s.youtube);
+  return useMemo(
+    () => buildLibrary(projectId, videos, jobs, elements, youtube),
+    [projectId, videos, jobs, elements, youtube],
+  );
+}
+
+/** Derived grouped elements for one project, memoized on the raw rows. */
+export function useElements(projectId: string): Project["elements"] {
+  const elements = useStudio((s) => s.elements);
+  return useMemo(() => groupElements(projectId, elements), [projectId, elements]);
+}
+
+/** Composer draft for one project. The store holds a ref per project, so the
+ *  returned object is stable unless that project's draft is edited. */
+export function useGen(projectId: string): GenDraft {
+  const draft = useComposer((s) => s.drafts[projectId]);
+  return useMemo(() => draft ?? defaultGen(), [draft]);
+}
+
+/** Publish prefs for one project: server truth once loaded, local cache
+ *  before that (mirrors the old derived Project.settings merge). */
+export function usePublishPrefs(projectId: string): { ytClientId: string; ytPrivacy: "private" | "unlisted" | "public"; ytCategory: string } {
+  const srv = useStudio((s) => (projectId ? s.settings[projectId] : undefined));
+  const loc = useComposer((s) => (projectId ? s.settings[projectId] : undefined));
+  return useMemo(
+    () => ({
+      ytClientId: srv?.ytClientId ?? loc?.ytClientId ?? "",
+      ytPrivacy: (srv?.ytPrivacy ?? loc?.ytPrivacy ?? "unlisted") as "private" | "unlisted" | "public",
+      ytCategory: srv?.ytCategory ?? loc?.ytCategory ?? "22",
+    }),
+    [srv, loc],
+  );
 }
 
 function parseParams<T extends Record<string, string>>(raw: URLSearchParams, defaults: T): T {

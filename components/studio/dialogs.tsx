@@ -14,9 +14,9 @@ import { authedMediaUrl, errOf } from "@/lib/api";
 import { uploadVideoFile } from "@/lib/upload-video";
 import { isAuthFailure, withYtAuth, ytUploadVideo, ytVideoState } from "@/lib/youtube";
 import { advancedFormSchema, ytPublishSchema } from "@/lib/schemas";
-import { useStudio } from "@/stores/use-studio";
+import { useComposer, useStudio } from "@/stores/use-studio";
 import { pushErr, useToasts, useYtAuth } from "@/stores/use-ui";
-import { useQueryState } from "@/hooks/use-studio-hooks";
+import { useElements, useGen, useLibrary, usePublishPrefs, useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateCloseButton } from "@/components/slate/button";
 import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
@@ -33,25 +33,26 @@ import { ModeBadge, StatusBadge, VideoCost, VideoProgress } from "@/components/s
 export function StudioDialogs() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
-  const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
+  const exists = useStudio((s) => s.projects.some((p) => p.id === projectId));
+  const lib = useLibrary(projectId);
   const { state, set } = useQueryState({ video: "", youtube: "", picker: "", refIndex: "0", advanced: "", confirmDel: "" });
   const close = (patch: Record<string, string>) => set(patch);
 
-  if (!project) return null;
-  const video = state.video ? project.library.find((v) => v.id === state.video) : undefined;
-  const ytVideo = state.youtube ? project.library.find((v) => v.id === state.youtube) : undefined;
-  const delVideo = state.confirmDel ? project.library.find((v) => v.id === state.confirmDel) : undefined;
+  if (!exists) return null;
+  const video = state.video ? lib.find((v) => v.id === state.video) : undefined;
+  const ytVideo = state.youtube ? lib.find((v) => v.id === state.youtube) : undefined;
+  const delVideo = state.confirmDel ? lib.find((v) => v.id === state.confirmDel) : undefined;
 
   return (
     <>
       {(state.picker === "image" || state.picker === "first" || state.picker === "last") && (
-        <ImagePickerDialog slotKey={state.picker} close={() => close({ picker: "", refIndex: "" })} />
+        <ImagePickerDialog projectId={projectId} slotKey={state.picker} close={() => close({ picker: "", refIndex: "" })} />
       )}
       {state.picker === "ref" && (
-        <ImagePickerDialog slotKey="ref" refIndex={Number(state.refIndex || 0)} close={() => close({ picker: "", refIndex: "" })} />
+        <ImagePickerDialog projectId={projectId} slotKey="ref" refIndex={Number(state.refIndex || 0)} close={() => close({ picker: "", refIndex: "" })} />
       )}
-      {state.picker === "video" && <VideoPickerDialog close={() => close({ picker: "" })} />}
-      {state.advanced === "1" && <AdvancedDialog close={() => close({ advanced: "" })} />}
+      {state.picker === "video" && <VideoPickerDialog projectId={projectId} close={() => close({ picker: "" })} />}
+      {state.advanced === "1" && <AdvancedDialog projectId={projectId} close={() => close({ advanced: "" })} />}
       {video && <VideoDetailDialog key={video.id} videoId={video.id} close={() => close({ video: "" })} />}
       {ytVideo && <YoutubeDialog videoId={ytVideo.id} close={() => close({ youtube: "" })} />}
       {delVideo && <DeleteVideoConfirm videoId={delVideo.id} close={() => close({ confirmDel: "" })} />}
@@ -60,32 +61,30 @@ export function StudioDialogs() {
 }
 
 // ---------- image picker ----------
-function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refIndex?: number; close: () => void }) {
-  const project = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
-  const updateActive = useStudio((s) => s.updateActive);
+function ImagePickerDialog({ projectId, slotKey, refIndex, close }: { projectId: string; slotKey: string; refIndex?: number; close: () => void }) {
+  const elements = useElements(projectId);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const addElement = useStudio((s) => s.addElement);
-  const push = useToasts((s) => s.push);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
-  if (!project) return null;
   const ql = q.trim().toLowerCase();
-  const total = EL_CATS.reduce((a, c) => a + ((project.elements[c.id as keyof typeof project.elements] || []).length), 0);
+  const total = EL_CATS.reduce((a, c) => a + ((elements[c.id as keyof typeof elements] || []).length), 0);
   const cats = EL_CATS.map((c) => ({
     ...c,
-    items: (project.elements[c.id as keyof typeof project.elements] || []).filter(
+    items: (elements[c.id as keyof typeof elements] || []).filter(
       (el) => !ql || el.name.toLowerCase().includes(ql) || el.note.toLowerCase().includes(ql),
     ),
   })).filter((g) => g.items.length);
 
   const pick = (img: string) => {
-    updateActive((d) => {
+    updateDraft(projectId, (d) => {
       if (slotKey === "ref") {
-        const r = d.gen.refs.filter(Boolean);
+        const r = d.refs.filter(Boolean);
         r[refIndex ?? 0] = img;
-        d.gen.refs = r.slice(0, 3);
-        d.gen.dur = 8;
+        d.refs = r.slice(0, 3);
+        d.dur = 8;
       } else {
-        (d.gen as Record<string, unknown>)[slotKey] = img;
+        (d as Record<string, unknown>)[slotKey] = img;
       }
     });
     close();
@@ -111,7 +110,7 @@ function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refI
           setBusy(true);
           fileToImage(f)
             .then(async (url) => {
-              const r = await addElement(slotKey === "ref" ? "assets" : "frames", {
+              const r = await addElement(projectId, slotKey === "ref" ? "assets" : "frames", {
                 name: (f.name || "Upload").replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "Upload",
                 imageUrl: url,
                 note: "Uploaded in picker",
@@ -156,15 +155,15 @@ function ImagePickerDialog({ slotKey, refIndex, close }: { slotKey: string; refI
 }
 
 // ---------- video picker ----------
-function VideoPickerDialog({ close }: { close: () => void }) {
-  const project = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
-  const updateActive = useStudio((s) => s.updateActive);
+function VideoPickerDialog({ projectId, close }: { projectId: string; close: () => void }) {
+  const lib = useLibrary(projectId);
+  const gen = useGen(projectId);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const importVideo = useStudio((s) => s.importVideo);
   const push = useToasts((s) => s.push);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
-  if (!project) return null;
-  const vids = project.library.filter((v) => v.status === "success" && v.url);
+  const vids = lib.filter((v) => v.status === "success" && v.url);
   const ql = q.trim().toLowerCase();
   const shown = vids.filter((v) => !ql || (v.prompt || "Untitled").toLowerCase().includes(ql));
 
@@ -187,7 +186,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
         busy={busy}
         onFile={(f) => {
           setBusy(true);
-          uploadVideoFile(f, importVideo)
+          uploadVideoFile(f, (a) => importVideo(projectId, a))
             .then((r) => {
               if (!r.ok || !r.id) {
                 if (!r.stored) pushErr("Server upload failed — importing record only", r.uploadDetail || undefined);
@@ -195,7 +194,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
                 return;
               }
               const id = r.id;
-              updateActive((d) => { d.gen.extendVideo = id; });
+              updateDraft(projectId, (d) => { d.extendVideo = id; });
               close();
               const tooBig = f.size > INLINE_VIDEO_MAX;
               push(
@@ -225,7 +224,7 @@ function VideoPickerDialog({ close }: { close: () => void }) {
       ) : (
         <div className="space-y-2 max-h-[46dvh] overflow-y-auto pr-0.5">
           {shown.map((v) => {
-            const exp = expectedDurOf(v, project.library);
+            const exp = expectedDurOf(v, lib);
             return (
             <button
               key={v.id}
@@ -235,10 +234,10 @@ function VideoPickerDialog({ close }: { close: () => void }) {
                   pushErr(`That video is ${exp}s — Extend inputs must be ≤ 30s.`);
                   return;
                 }
-                updateActive((d) => { d.gen.extendVideo = v.id; });
+                updateDraft(projectId, (d) => { d.extendVideo = v.id; });
                 close();
               }}
-              className={`w-full text-left slate-card p-2 flex items-center gap-2.5 hover:border-[#3FA96D] ${project.gen.extendVideo === v.id ? "!border-[#3FA96D]" : ""}`}
+              className={`w-full text-left slate-card p-2 flex items-center gap-2.5 hover:border-[#3FA96D] ${gen.extendVideo === v.id ? "!border-[#3FA96D]" : ""}`}
             >
               <span className="w-24 aspect-video rounded-[7px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -258,16 +257,15 @@ function VideoPickerDialog({ close }: { close: () => void }) {
 }
 
 // ---------- advanced ----------
-function AdvancedDialog({ close }: { close: () => void }) {
-  const project = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
-  const updateActive = useStudio((s) => s.updateActive);
+function AdvancedDialog({ projectId, close }: { projectId: string; close: () => void }) {
+  const gen = useGen(projectId);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const push = useToasts((s) => s.push);
-  const [seed, setSeed] = useState<string | number>(project?.gen.seed ?? "");
+  const [seed, setSeed] = useState<string | number>(gen.seed ?? "");
   const [person, setPerson] = useState<"allow_adult" | "dont_allow">(
-    project?.gen.person === "dont_allow" ? "dont_allow" : "allow_adult",
+    gen.person === "dont_allow" ? "dont_allow" : "allow_adult",
   );
-  const [negative, setNegative] = useState(project?.gen.negativePrompt ?? "");
-  if (!project) return null;
+  const [negative, setNegative] = useState(gen.negativePrompt ?? "");
   return (
     <SlateModal onClose={close}>
       <SlateModalHead title="Advanced settings" onClose={close} />
@@ -305,7 +303,7 @@ function AdvancedDialog({ close }: { close: () => void }) {
                 pushErr("Invalid advanced settings");
                 return;
               }
-              updateActive((d) => { d.gen.seed = parsed.data.seed; d.gen.person = parsed.data.person; d.gen.negativePrompt = parsed.data.negativePrompt; });
+              updateDraft(projectId, (d) => { d.seed = parsed.data.seed; d.person = parsed.data.person; d.negativePrompt = parsed.data.negativePrompt; });
               push("Advanced settings saved", { icon: "check" });
               close();
             }}
@@ -321,14 +319,15 @@ function AdvancedDialog({ close }: { close: () => void }) {
 // ---------- video detail ----------
 function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => void }) {
   const params = useParams<{ projectId: string }>();
+  const projectId = params.projectId;
   const router = useRouter();
-  const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
+  const lib = useLibrary(projectId);
   const addElement = useStudio((s) => s.addElement);
   const loadIntoComposer = useStudio((s) => s.loadIntoComposer);
-  const updateActive = useStudio((s) => s.updateActive);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", youtube: "", confirmDel: "" });
-  const v = project?.library.find((x) => x.id === videoId);
+  const v = lib.find((x) => x.id === videoId);
   // Instant dismiss: hiding first unmounts the <video> (stopping a slow
   // buffer and freeing the connection) before the URL round-trip lands,
   // so close never waits on the network.
@@ -337,17 +336,17 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     setDismissed(true);
     close();
   };
-  if (!project || !v || dismissed) return null;
+  if (!v || dismissed) return null;
   const m = modelOf(v.model);
   // Extend rows store the 7s chunk on old records but the TOTAL on new ones:
   // expectedDur resolves either way (8s -> 15s -> 22s chains).
   const srcVideo = v.mode === "extend" && v.inputs.extendVideo
-    ? project.library.find((x) => x.id === v.inputs.extendVideo)
+    ? lib.find((x) => x.id === v.inputs.extendVideo)
     : undefined;
-  const displayDur = expectedDurOf(v, project.library);
+  const displayDur = expectedDurOf(v, lib);
   const cfg: [string, string][] = [
     ["Model", (v.model === "import" ? "Upload" : m.label) + (m.retires && v.model !== "import" ? " · retires Jun 30" : "")],
-    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDurOf(srcVideo, project.library) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
+    ["Resolution", v.res], ["Aspect", v.aspect], ["Duration", v.mode === "extend" ? `${fmtDurPair(displayDur, v.durActual)} (src ${srcVideo ? expectedDurOf(srcVideo, lib) : "?"}s + 7s)` : fmtDurPair(v.dur, v.durActual)],
     ["Size", fmtBytes(v.size)],
     ["Audio", v.audio ? "On" : "Off"],
     ["Seed", v.seed === "" || v.seed == null ? "random" : String(v.seed)],
@@ -363,7 +362,7 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
     push(`Grabbing ${which.toLowerCase()}…`, { icon: "loading" });
     captureAt(authedMediaUrl(v.url), t)
       .then(async (img) => {
-        const r = await addElement("frames", {
+        const r = await addElement(projectId, "frames", {
           name: `${which} · ${(v.prompt || "video").slice(0, 28)}`,
           imageUrl: img,
           note: "Grabbed from library video",
@@ -380,19 +379,19 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
       pushErr(`That video is ${displayDur}s — Extend inputs must be ≤ 30s (cap 37s total).`);
       return;
     }
-    updateActive((d) => { d.gen.mode = "extend"; d.gen.extendVideo = v.id; });
-    router.push(`/p/${project.id}/generate`);
+    updateDraft(projectId, (d) => { d.mode = "extend"; d.extendVideo = v.id; });
+    router.push(`/p/${projectId}/generate`);
     dismiss();
   };
 
   const reload = () => {
-    const r = loadIntoComposer(v.id);
+    const r = loadIntoComposer(projectId, v.id);
     if (!r.ok) {
       pushErr(r.error ?? "Cannot reload");
       return;
     }
     dismiss();
-    router.push(`/p/${project.id}/generate`);
+    router.push(`/p/${projectId}/generate`);
     if (r.missing?.length) {
       push("Config reloaded — some inputs are gone", {
         icon: "sparkles",
@@ -619,11 +618,13 @@ function VideoDetailDialog({ videoId, close }: { videoId: string; close: () => v
 }
 
 function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => void }) {
+  const params = useParams<{ projectId: string }>();
+  const projectId = params.projectId;
   const deleteVideo = useStudio((s) => s.deleteVideo);
-  const project = useStudio((s) => s.projects.find((x) => x.id === (s.activeId ?? "")) ?? s.projects[0]);
+  const lib = useLibrary(projectId);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", confirmDel: "" });
-  const v = project?.library.find((x) => x.id === videoId);
+  const v = lib.find((x) => x.id === videoId);
   const mode = v?.status === "pending" ? "cancel" : v?.status === "failed" ? "dismiss" : "delete";
   const copy = {
     cancel: {
@@ -665,15 +666,17 @@ function DeleteVideoConfirm({ videoId, close }: { videoId: string; close: () => 
 // ---------- youtube publish ----------
 function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void }) {
   const params = useParams<{ projectId: string }>();
-  const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
-  const setYoutube = useStudio((s) => s.setYoutube);
+  const projectId = params.projectId;
+  const lib = useLibrary(projectId);
+  const prefs = usePublishPrefs(projectId);
+  const setYoutube = useComposer((s) => s.setYoutube);
   const push = useToasts((s) => s.push);
   const yt = useYtAuth();
-  const v = project?.library.find((x) => x.id === videoId);
+  const v = lib.find((x) => x.id === videoId);
   const saved = v?.youtube ?? {};
   const [title, setTitle] = useState(saved.title || (v?.prompt || "Untitled").slice(0, 95) || "Untitled");
   const [desc, setDesc] = useState(saved.description || ((v?.prompt || "") + (v?.prompt ? " — " : "") + `Made with AI Video Studio (${v ? modelOf(v.model).label : ""}, ${v?.res}, ${v?.dur}s). #AIVideo`));
-  const [privacy, setPrivacy] = useState(saved.privacy || project?.settings.ytPrivacy || "unlisted");
+  const [privacy, setPrivacy] = useState(saved.privacy || prefs.ytPrivacy || "unlisted");
   const [busy, setBusy] = useState(false);
   const [pct, setPct] = useState(saved.pct || 0);
   const [info, setInfo] = useState<typeof saved | null>(saved.videoId ? saved : null);
@@ -683,7 +686,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
     if (pollRef.current) clearInterval(pollRef.current);
   }, []);
 
-  if (!project || !v) return null;
+  if (!v) return null;
   const connected = !!yt.token && yt.exp > Date.now();
   const saveYt = (patch: Record<string, unknown>) => setYoutube(v.id, patch);
 
@@ -746,7 +749,7 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
     }
     push("Refreshing YouTube status…", { icon: "loading" });
     // Click gesture: reconnects first when the token is dead.
-    withYtAuth(project.settings.ytClientId || "", (tok) => ytVideoState(tok, id))
+    withYtAuth(prefs.ytClientId || "", (tok) => ytVideoState(tok, id))
       .then((item) => {
         const patch = ytPatch(item);
         saveYt(patch);
@@ -777,9 +780,9 @@ function YoutubeDialog({ videoId, close }: { videoId: string; close: () => void 
       saveYt({ title: parsed.data.title.slice(0, 100), description: parsed.data.description.slice(0, 4900), privacy, state: "uploading", pct: 0, startedAt: Date.now() });
       // Click gesture: reconnects first when the token is dead, and once more
       // on a mid-upload 401 (fresh session, restarted — tokens live ~1h, uploads minutes).
-      const out = await withYtAuth(project.settings.ytClientId || "", (tok) => ytUploadVideo({
+      const out = await withYtAuth(prefs.ytClientId || "", (tok) => ytUploadVideo({
         token: tok, file: blob, title: parsed.data.title.slice(0, 100), description: parsed.data.description.slice(0, 4900),
-        tags: ["AI video", "Veo", modelOf(v.model).label], categoryId: project.settings.ytCategory || "22",
+        tags: ["AI video", "Veo", modelOf(v.model).label], categoryId: prefs.ytCategory || "22",
         privacy, madeForKids: false, synthetic: true, onProgress: (pc) => { setPct(pc); saveYt({ pct: pc }); },
       }));
       const id = out?.id;

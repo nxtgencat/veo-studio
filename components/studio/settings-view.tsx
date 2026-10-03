@@ -11,6 +11,7 @@ import { rateFor } from "@/lib/pricing";
 import { refreshYtAccount, ytCatLabel, ytConnectWithChannel, ytErrorHint, ytRevokeAccess } from "@/lib/youtube";
 import { useStudio } from "@/stores/use-studio";
 import { pushErr, useBackup, useToasts, useYtAuth } from "@/stores/use-ui";
+import { usePublishPrefs } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton } from "@/components/slate/button";
 import { PageHead, SlateCardHeader, SlateField, SlateLabel, SlateTextarea, SlateToggle } from "@/components/slate/core";
@@ -28,19 +29,22 @@ function RateCell({ tier, res, audio }: { tier: string; res: string; audio: bool
 
 export function SettingsView() {
   const params = useParams<{ projectId: string }>();
-  const project = useStudio((s) => s.projects.find((x) => x.id === params.projectId));
+  const projectId = params.projectId;
+  const exists = useStudio((s) => s.projects.some((p) => p.id === projectId));
+  const name = useStudio((s) => s.projects.find((p) => p.id === projectId)?.name ?? "");
   const saveSettings = useStudio((s) => s.saveSettings);
-  const serverSettings = useStudio((s) => s.serverSettings(params.projectId));
+  const serverSettings = useStudio((s) => (projectId ? s.settings[projectId] : undefined));
+  const prefs = usePublishPrefs(projectId);
   const push = useToasts((s) => s.push);
   const { resolvedTheme, setTheme } = useTheme();
   const dark = resolvedTheme === "dark";
   const yt = useYtAuth();
   const [sa, setSa] = useState("");
   const [bucket, setBucket] = useState("");
-  const [authMode, setAuthMode] = useState<"service_account" | "env">(project?.settings.authMode ?? "service_account");
-  const [ytId, setYtId] = useState(project?.settings.ytClientId ?? "");
-  const [ytPriv, setYtPriv] = useState(project?.settings.ytPrivacy ?? "unlisted");
-  const [ytCat, setYtCat] = useState(project?.settings.ytCategory ?? "22");
+  const [authMode, setAuthMode] = useState<"service_account" | "env">(serverSettings?.authMode ?? "service_account");
+  const [ytId, setYtId] = useState(prefs.ytClientId);
+  const [ytPriv, setYtPriv] = useState(prefs.ytPrivacy);
+  const [ytCat, setYtCat] = useState(prefs.ytCategory);
   const [ytBusy, setYtBusy] = useState(false);
   const [ytAppBusy, setYtAppBusy] = useState(false);
   const [ytPrefsBusy, setYtPrefsBusy] = useState(false);
@@ -50,21 +54,22 @@ export function SettingsView() {
 
   // Connection truth lives server-side; inputs are connect-only (a connected
   // entry must be disconnected before a new one can be entered).
-  const saConnected = !!serverSettings?.hasSaJson && (project?.settings.authMode ?? "service_account") === "service_account";
-  const bucketId = project?.settings.bucket ?? "";
-  const bucketOn = project?.settings.useBucket ?? false;
-  const saReady = (project?.settings.authMode ?? "service_account") === "env" || !!serverSettings?.hasSaJson;
+  const storedAuthMode = serverSettings?.authMode ?? "service_account";
+  const saConnected = !!serverSettings?.hasSaJson && storedAuthMode === "service_account";
+  const bucketId = serverSettings?.bucket ?? "";
+  const bucketOn = serverSettings?.useBucket ?? false;
+  const saReady = storedAuthMode === "env" || !!serverSettings?.hasSaJson;
 
   // Reset connect forms when switching projects.
   useEffect(() => {
     setSa("");
     setBucket("");
-    setAuthMode(project?.settings.authMode ?? "service_account");
-    setYtId(project?.settings.ytClientId ?? "");
-    setYtPriv(project?.settings.ytPrivacy ?? "unlisted");
-    setYtCat(project?.settings.ytCategory ?? "22");
+    setAuthMode(serverSettings?.authMode ?? "service_account");
+    setYtId(prefs.ytClientId);
+    setYtPriv(prefs.ytPrivacy);
+    setYtCat(prefs.ytCategory);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id]);
+  }, [projectId]);
 
   // Heal sessions connected before account state existed (or when the check
   // failed): token is live but nothing is known — check once, persist.
@@ -83,10 +88,10 @@ export function SettingsView() {
     void refreshYtAccount().finally(() => setYtCheckBusy(false));
   };
 
-  if (!project) return null;
+  if (!exists) return null;
   const connected = !!yt.token && yt.exp > Date.now();
   // OAuth app truth lives server-side (client ID is public by design).
-  const ytAppId = project.settings.ytClientId ?? "";
+  const ytAppId = prefs.ytClientId;
   // Channel metadata (one channels.list at connect, 1 quota unit).
   const ytStats = yt.meta ? [
     yt.meta.subs != null ? `${yt.meta.subs.toLocaleString()} subs` : "",
@@ -115,7 +120,7 @@ export function SettingsView() {
     setBktBusy(true);
     void saveSettings({ bucket: id, useBucket: false }).then(
       () => {
-        const loc = useStudio.getState().serverSettings(project?.id ?? "")?.bucketLocation;
+        const loc = useStudio.getState().serverSettings(projectId)?.bucketLocation;
         setBucket("");
         push("Bucket connected · Off", { icon: "check", detail: loc ? `Reachable · ${loc}` : "Verified — flip the toggle to use it" });
       },
@@ -198,7 +203,7 @@ export function SettingsView() {
 
   return (
     <>
-      <PageHead title="Settings" sub={`Credentials and pricing for ${project.name}. The service-account key lives on the server and is never sent back.`} />
+      <PageHead title="Settings" sub={`Credentials and pricing for ${name}. The service-account key lives on the server and is never sent back.`} />
       <div className="grid xl:grid-cols-2 gap-4 items-start">
         {/* Two explicit stacks (not row-aligned cards) so short + tall cards
             never leave dead gaps — left: Appearance + YouTube app + account, right: Cloud. */}
@@ -362,7 +367,7 @@ export function SettingsView() {
         <SlateCard>
           <SlateCardHeader>
             <h3 className="font-display font-bold text-[13.5px]">Service account</h3>
-            {project.settings.authMode === "env" ? (
+            {storedAuthMode === "env" ? (
               <SlateBadge tone="info">Environment</SlateBadge>
             ) : saConnected ? (
               <SlateBadge tone="ok"><KeyRound className="size-3" /> Connected</SlateBadge>

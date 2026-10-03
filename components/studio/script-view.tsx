@@ -13,9 +13,9 @@ import {
   CHAIN_RISK_META, CHECK_TONE, CONTENT_RISK_META, KIND_META, MODE_META, ROLE_LABEL, mmss, shortName,
   type EntityKindKey, type PreviewFile, type ScriptCall, type ScriptDetail, type ScriptEntity, type ScriptSummary,
 } from "@/lib/script";
-import { useQueryState } from "@/hooks/use-studio-hooks";
+import { useElements, useLibrary, useQueryState } from "@/hooks/use-studio-hooks";
 import { pushErr, useToasts } from "@/stores/use-ui";
-import { useStudio } from "@/stores/use-studio";
+import { useComposer, useStudio } from "@/stores/use-studio";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateCloseButton, SlateIconButton } from "@/components/slate/button";
 import { PageHead, SlateEmpty, SlateSearchField, SlateSegmented } from "@/components/slate/core";
@@ -991,24 +991,23 @@ function SheetSec({ label, action, children }: { label?: React.ReactNode; action
 
 /** Flat Elements + Library lookups for link resolution (script entity → element image, call → video). */
 function useProjectAssets(projectId: string) {
-  const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
-  const ensureLoaded = useStudio((s) => s.ensureLoaded);
+  const ensureProject = useStudio((s) => s.ensureProject);
+  const grouped = useElements(projectId);
+  const videos = useLibrary(projectId);
   useEffect(() => {
-    if (projectId) void ensureLoaded(projectId).catch(() => {});
+    if (projectId) void ensureProject(projectId).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
   const elements = useMemo(() => {
-    if (!project) return [] as { id: string; name: string; img: string; cat: string }[];
     const out: { id: string; name: string; img: string; cat: string }[] = [];
     (["characters", "locations", "assets", "frames"] as const).forEach((cat) => {
-      for (const e of project.elements[cat] ?? []) out.push({ ...e, cat });
+      for (const e of grouped[cat] ?? []) out.push({ ...e, cat });
     });
     return out;
-  }, [project]);
+  }, [grouped]);
   const elementById = useMemo(() => new Map(elements.map((e) => [e.id, e])), [elements]);
-  const videos = useMemo(() => project?.library ?? [], [project]);
   const videoById = useMemo(() => new Map(videos.map((v) => [v.id, v])), [videos]);
-  return { project, elements, elementById, videos, videoById };
+  return { elements, elementById, videos, videoById };
 }
 
 const CALL_TO_GEN: Record<string, "r2v" | "extend" | "frames" | "t2v"> = {
@@ -1031,7 +1030,7 @@ type LinkTarget =
 function useComposerCall(detail: ScriptDetail, projectId: string) {
   const router = useRouter();
   const push = useToasts((s) => s.push);
-  const updateActive = useStudio((s) => s.updateActive);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const { elements, elementById, videos, videoById } = useProjectAssets(projectId);
 
   const generate = async (call: ScriptCall) => {
@@ -1043,7 +1042,7 @@ function useComposerCall(detail: ScriptDetail, projectId: string) {
     }
     const refs = call.refs ?? [];
     const missing: string[] = [];
-    let images: string[] = [];
+    const images: string[] = [];
     let extendVideo = "";
     let first = "";
     let last = "";
@@ -1116,31 +1115,23 @@ function useComposerCall(detail: ScriptDetail, projectId: string) {
     // text-to-video: prompt only — nothing else loads.
     // Two writes: the first flips the mode (which resets advanced settings),
     // the second lands prompt/negative/inputs on the settled mode.
-    const switched = updateActive((d) => {
-      const cur = modelOf(d.gen.model);
-      if (targetMode === "r2v" && !cur.ref) d.gen.model = "veo-3.1-fast-generate-001";
-      if (targetMode === "extend" && !cur.ext) d.gen.model = "veo-3.1-fast-generate-001";
-      if (targetMode === "frames" && !cur.flf) d.gen.model = "veo-3.1-fast-generate-001";
-      d.gen.mode = targetMode;
+    updateDraft(projectId, (d) => {
+      const cur = modelOf(d.model);
+      if (targetMode === "r2v" && !cur.ref) d.model = "veo-3.1-fast-generate-001";
+      if (targetMode === "extend" && !cur.ext) d.model = "veo-3.1-fast-generate-001";
+      if (targetMode === "frames" && !cur.flf) d.model = "veo-3.1-fast-generate-001";
+      d.mode = targetMode;
     });
-    if (!switched.ok) {
-      pushErr(switched.error ?? "Cannot load composer");
-      return;
-    }
-    const loaded = updateActive((d) => {
-      d.gen.prompt = call.renderedPrompt;
-      d.gen.negativePrompt = (call.negative_prompt ?? "").slice(0, 2000);
-      d.gen.image = "";
-      d.gen.first = first;
-      d.gen.last = last;
-      d.gen.refs = images.slice(0, 3);
-      d.gen.extendVideo = extendVideo;
-      if (targetMode === "r2v") d.gen.dur = 8;
+    updateDraft(projectId, (d) => {
+      d.prompt = call.renderedPrompt;
+      d.negativePrompt = (call.negative_prompt ?? "").slice(0, 2000);
+      d.image = "";
+      d.first = first;
+      d.last = last;
+      d.refs = images.slice(0, 3);
+      d.extendVideo = extendVideo;
+      if (targetMode === "r2v") d.dur = 8;
     });
-    if (!loaded.ok) {
-      pushErr(loaded.error ?? "Cannot load composer");
-      return;
-    }
     router.push(`/p/${projectId}/generate`);
     if (missing.length) {
       push("Loaded — some inputs need you", {

@@ -10,9 +10,9 @@ import {
 import { EL_CATS, MODES } from "@/lib/catalog";
 import { fmtDurPair, money } from "@/lib/format";
 import { allModels, expectedDurOf, modelOf, priceFor } from "@/lib/pricing";
-import { useStudio } from "@/stores/use-studio";
+import { useComposer, useStudio } from "@/stores/use-studio";
 import { pushErr, useToasts } from "@/stores/use-ui";
-import { useQueryState } from "@/hooks/use-studio-hooks";
+import { useElements, useGen, useLibrary, useQueryState } from "@/hooks/use-studio-hooks";
 import { SlateBadge } from "@/components/slate/badge";
 import { SlateButton, SlateIconButton } from "@/components/slate/button";
 import { SlateDropdown, SlateMenuRow, SlateOption } from "@/components/slate/dropdown";
@@ -21,7 +21,7 @@ import { PageHead } from "@/components/slate/core";
 import { ModeBadge, ModeIcon, StatusBadge, VideoProgress } from "@/components/studio/shared";
 import type { VideoItem } from "@/lib/schemas";
 
-/** One recents card. Memo + stable item refs: progress ticks re-render only
+/** One recents card. Memo + stable derivation: progress ticks re-render only
  *  the rows that actually changed, not the whole thread. */
 const RecentCard = memo(function RecentCard({ v, lib, projectId }: {
   v: VideoItem; lib: VideoItem[]; projectId: string;
@@ -131,8 +131,11 @@ function SlotBox({
 export function GenerateView() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
-  const project = useStudio((s) => s.projects.find((x) => x.id === projectId));
-  const updateActive = useStudio((s) => s.updateActive);
+  const exists = useStudio((s) => s.projects.some((p) => p.id === projectId));
+  const lib = useLibrary(projectId);
+  const elements = useElements(projectId);
+  const g = useGen(projectId);
+  const updateDraft = useComposer((s) => s.updateDraft);
   const queueGeneration = useStudio((s) => s.queueGeneration);
   const push = useToasts((s) => s.push);
   const { set } = useQueryState({ video: "", youtube: "", picker: "", refIndex: "", advanced: "" });
@@ -140,23 +143,22 @@ export function GenerateView() {
   const [mention, setMention] = useState<{ q: string; start: number; pos: number } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const g = project?.gen;
-  const m = useMemo(() => modelOf(g?.model ?? ""), [g?.model]);
+  const m = useMemo(() => modelOf(g.model), [g.model]);
   const capsReady = useStudio((s) => s.capsReady);
   const MODELS = useMemo(() => (capsReady ? allModels() : []), [capsReady]);
   const price = useMemo(
-    () => (g ? priceFor(g.model, g.res, g.dur, g.audio, g.batch) : null),
-    [g?.model, g?.res, g?.dur, g?.audio, g?.batch],
+    () => priceFor(g.model, g.res, g.dur, g.audio, g.batch),
+    [g.model, g.res, g.dur, g.audio, g.batch],
   );
-  const cur = MODES.find((x) => x.id === g?.mode) ?? MODES[0];
+  const cur = MODES.find((x) => x.id === g.mode) ?? MODES[0];
   // Recents thread is generations only — uploads live in Library → Uploaded.
   const recents = useMemo(
-    () => (project?.library ?? []).filter((v) => !v.imported),
-    [project?.library],
+    () => lib.filter((v) => !v.imported),
+    [lib],
   );
   const pendingCount = useMemo(() => recents.filter((v) => v.status === "pending").length, [recents]);
 
-  if (!project || !g) return null;
+  if (!exists) return null;
   if (!capsReady) {
     return (
       <div className="min-h-full grid place-items-center">
@@ -181,7 +183,7 @@ export function GenerateView() {
   const allEls = () => {
     const out: { cat: string; label: string; e: { id: string; name: string; img: string; note: string } }[] = [];
     EL_CATS.forEach(({ id: cat, label }) => {
-      (project.elements[cat as keyof typeof project.elements] || []).forEach((e) =>
+      (elements[cat as keyof typeof elements] || []).forEach((e) =>
         out.push({ cat, label, e }),
       );
     });
@@ -190,25 +192,24 @@ export function GenerateView() {
   const mentionList = mention ? allEls().filter((x) => x.e.name.toLowerCase().includes(mention.q)).slice(0, 6) : [];
 
   const attachMention = (img: string) => {
-    updateActive((draft) => {
-      const gg = draft.gen;
-      if (gg.mode === "frames") {
-        if (!gg.first) gg.first = img;
-        else if (!gg.last) gg.last = img;
-      } else if (gg.mode === "i2v") {
-        if (!gg.image) gg.image = img;
-      } else if (gg.mode === "r2v") {
-        const r = gg.refs.filter(Boolean);
+    updateDraft(projectId, (d) => {
+      if (d.mode === "frames") {
+        if (!d.first) d.first = img;
+        else if (!d.last) d.last = img;
+      } else if (d.mode === "i2v") {
+        if (!d.image) d.image = img;
+      } else if (d.mode === "r2v") {
+        const r = d.refs.filter(Boolean);
         if (r.length < 3 && !r.includes(img)) r.push(img);
-        gg.refs = r;
-      } else if (gg.mode === "t2v") {
-        const mm = modelOf(gg.model);
-        if (!("ref" in mm && mm.ref)) gg.model = "veo-3.1-fast-generate-001";
-        gg.mode = "r2v";
-        const r = gg.refs.filter(Boolean);
+        d.refs = r;
+      } else if (d.mode === "t2v") {
+        const mm = modelOf(d.model);
+        if (!("ref" in mm && mm.ref)) d.model = "veo-3.1-fast-generate-001";
+        d.mode = "r2v";
+        const r = d.refs.filter(Boolean);
         if (r.length < 3 && !r.includes(img)) r.push(img);
-        gg.refs = r;
-        gg.dur = 8;
+        d.refs = r;
+        d.dur = 8;
       }
     });
   };
@@ -217,7 +218,7 @@ export function GenerateView() {
     if (submitting) return;
     setMention(null);
     setSubmitting(true);
-    void queueGeneration().then((r) => {
+    void queueGeneration(projectId).then((r) => {
       setSubmitting(false);
       if (!r.ok) pushErr(r.error ?? "Cannot generate");
       else push(`${r.count} render${(r.count ?? 1) > 1 ? "s" : ""} queued`, { icon: "sparkles", detail: `${m.label} · ${g.res} · ${g.dur}s` });
@@ -271,7 +272,7 @@ export function GenerateView() {
               />
             </div>
             {recents.map((v) => (
-              <RecentCard key={v.id} v={v} lib={project.library} projectId={projectId} />
+              <RecentCard key={v.id} v={v} lib={lib} projectId={projectId} />
             ))}
           </>
         )}
@@ -334,9 +335,9 @@ export function GenerateView() {
                     <SlateMenuRow
                       key={md.id}
                       active={on}
-                      onPick={() => updateActive((d) => {
-                        d.gen.mode = md.id;
-                        if (md.id === "r2v") d.gen.dur = 8;
+                      onPick={() => updateDraft(projectId, (d) => {
+                        d.mode = md.id;
+                        if (md.id === "r2v") d.dur = 8;
                       })}
                       onClose={close}
                     >
@@ -359,30 +360,30 @@ export function GenerateView() {
                   <SlotBox
                     img={g.image} emptyLabel="Frame"
                     onPick={() => openPicker({ picker: "image" })}
-                    onClear={() => updateActive((d) => { d.gen.image = ""; })}
+                    onClear={() => updateDraft(projectId, (d) => { d.image = ""; })}
                   />
                 )}
                 {g.mode === "frames" && (["first", "last"] as const).map((k) => (
                   <SlotBox
                     key={k} img={g[k]} emptyLabel={k === "first" ? "First" : "Last"}
                     onPick={() => openPicker({ picker: k })}
-                    onClear={() => updateActive((d) => { d.gen[k] = ""; })}
+                    onClear={() => updateDraft(projectId, (d) => { d[k] = ""; })}
                   />
                 ))}
                 {g.mode === "r2v" && [0, 1, 2].map((i) => (
                   <SlotBox
                     key={i} img={g.refs[i] || ""} emptyLabel={`Ref ${i + 1}`}
                     onPick={() => openPicker({ picker: "ref", refIndex: String(i) })}
-                    onClear={() => updateActive((d) => { d.gen.refs = d.gen.refs.filter((_, j) => j !== i); })}
+                    onClear={() => updateDraft(projectId, (d) => { d.refs = d.refs.filter((_, j) => j !== i); })}
                   />
                 ))}
                 {g.mode === "extend" && (() => {
-                  const sel = project.library.find((v) => v.id === g.extendVideo);
+                  const sel = lib.find((v) => v.id === g.extendVideo);
                   return (
                     <SlotBox
-                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${expectedDurOf(sel, project.library)}s` : ""}
+                      img={sel?.thumb ?? ""} emptyLabel="Video" tag={sel ? `${expectedDurOf(sel, lib)}s` : ""}
                       onPick={() => openPicker({ picker: "video" })}
-                      onClear={() => updateActive((d) => { d.gen.extendVideo = ""; })}
+                      onClear={() => updateDraft(projectId, (d) => { d.extendVideo = ""; })}
                     />
                   );
                 })()}
@@ -405,9 +406,9 @@ export function GenerateView() {
                         const men = mention;
                         if (!men) return;
                         const token = `@${x.e.name} `;
-                        updateActive((draft) => {
-                          const curP = draft.gen.prompt;
-                          draft.gen.prompt = curP.slice(0, men.start) + token + curP.slice(men.pos);
+                        updateDraft(projectId, (d) => {
+                          const curP = d.prompt;
+                          d.prompt = curP.slice(0, men.start) + token + curP.slice(men.pos);
                         });
                         setMention(null);
                         attachMention(x.e.img);
@@ -442,7 +443,7 @@ export function GenerateView() {
                   maxLength={4000}
                   ref={(el) => { taRef.current = el; fit(el); }}
                   onChange={(e) => {
-                    updateActive((draft) => { draft.gen.prompt = e.target.value; });
+                    updateDraft(projectId, (d) => { d.prompt = e.target.value; });
                     fit(e.target);
                     const pos = e.target.selectionStart || 0;
                     const mt = e.target.value.slice(0, pos).match(/@([\w-]*)$/);
@@ -469,7 +470,7 @@ export function GenerateView() {
                   size="icon"
                   variant={g.enhance ? "primary" : "ghost"}
                   label={`Enhance prompt ${g.enhance ? "on" : "off"}`}
-                  onClick={() => updateActive((d) => { d.gen.enhance = !d.gen.enhance; })}
+                  onClick={() => updateDraft(projectId, (d) => { d.enhance = !d.enhance; })}
                 >
                   <WandSparkles className="size-4" />
                 </SlateIconButton>
@@ -490,12 +491,12 @@ export function GenerateView() {
                       key={x.id}
                       active={g.model === x.id}
                       sub={"preview" in x && x.preview ? "Preview" : "retires" in x && x.retires ? "retires Jun 30" : x.tier}
-                      onPick={() => updateActive((d) => {
-                        d.gen.model = x.id;
+                      onPick={() => updateDraft(projectId, (d) => {
+                        d.model = x.id;
                         const mm = modelOf(x.id);
-                        if (!(mm.res as readonly string[]).includes(d.gen.res)) d.gen.res = (mm.res[0] as "720p" | "1080p" | "4K");
-                        if (!(mm.dur as readonly number[]).includes(d.gen.dur)) d.gen.dur = mm.dur[mm.dur.length - 1];
-                        if ("silent" in mm && mm.silent) d.gen.audio = false;
+                        if (!(mm.res as readonly string[]).includes(d.res)) d.res = (mm.res[0] as "720p" | "1080p" | "4K");
+                        if (!(mm.dur as readonly number[]).includes(d.dur)) d.dur = mm.dur[mm.dur.length - 1];
+                        if ("silent" in mm && mm.silent) d.audio = false;
                       })}
                       onClose={close}
                     >
@@ -511,7 +512,7 @@ export function GenerateView() {
                     return (
                       <SlateOption
                         key={r} active={g.res === r} disabled={dis} note={dis ? "N/A" : undefined}
-                        onPick={() => updateActive((d) => { d.gen.res = r as "720p" | "1080p" | "4K"; })} onClose={close}
+                        onPick={() => updateDraft(projectId, (d) => { d.res = r as "720p" | "1080p" | "4K"; })} onClose={close}
                       >
                         {r}
                       </SlateOption>
@@ -523,7 +524,7 @@ export function GenerateView() {
                   title="Aspect ratio"
                   menu={(close) => ["16:9", "9:16"].map((r) => (
                     <SlateOption key={r} active={g.aspect === r}
-                      onPick={() => updateActive((d) => { d.gen.aspect = r as "16:9" | "9:16"; })} onClose={close}>
+                      onPick={() => updateDraft(projectId, (d) => { d.aspect = r as "16:9" | "9:16"; })} onClose={close}>
                       {r}
                     </SlateOption>
                   ))}
@@ -538,7 +539,7 @@ export function GenerateView() {
                       <SlateOption
                         key={d} active={g.dur === d}
                         disabled={dis} note={dis ? "N/A" : undefined}
-                        onPick={() => updateActive((draft) => { draft.gen.dur = d; })} onClose={close}
+                        onPick={() => updateDraft(projectId, (d2) => { d2.dur = d; })} onClose={close}
                       >
                         {d}s
                       </SlateOption>
@@ -550,7 +551,7 @@ export function GenerateView() {
                   variant={g.audio ? "primary" : "ghost"}
                   label={`Audio ${g.audio ? "on" : "off"}`}
                   disabled={"silent" in m && !!m.silent}
-                  onClick={() => updateActive((d) => { d.gen.audio = !d.gen.audio; })}
+                  onClick={() => updateDraft(projectId, (d) => { d.audio = !d.audio; })}
                 >
                   {g.audio ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
                 </SlateIconButton>
@@ -559,7 +560,7 @@ export function GenerateView() {
                   title="Batch count"
                   menu={(close) => [1, 2, 3, 4].map((b) => (
                     <SlateOption key={b} active={g.batch === b} sub={b === 1 ? "single" : `${b} videos`}
-                      onPick={() => updateActive((d) => { d.gen.batch = b; })} onClose={close}>
+                      onPick={() => updateDraft(projectId, (d) => { d.batch = b; })} onClose={close}>
                       ×{b}
                     </SlateOption>
                   ))}

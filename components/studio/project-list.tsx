@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import { useStudio } from "@/stores/use-studio";
@@ -12,12 +12,13 @@ import { SlateField, SlateLabel } from "@/components/slate/core";
 import { ConfirmDeleteDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 import { SlateTooltip } from "@/components/slate/tooltip";
 
-export function ProjectList() {
-  // Stable server rows (array ref only changes on create/rename/delete) plus
-  // a primitive pending string — both keep their identity across poll ticks
-  // and composer keystrokes, so the sidebar list skips those re-renders.
-  // (Mapped objects would defeat shallow compare: new identities every call.)
-  const projects = useStudio((s) => s.srvProjects);
+/** No props — store subscriptions drive updates, so memo shields it from
+ *  parent (page/shell) re-renders on query navigations like dialog open. */
+export const ProjectList = memo(function ProjectList() {
+  // Stable server rows (ref only changes on create/rename/delete) plus a
+  // primitive pending string — both keep identity across poll ticks and
+  // composer keystrokes, so the sidebar list skips those re-renders.
+  const projects = useStudio((s) => s.projects);
   const pendingIds = useStudio((s) => {
     let out = "";
     for (const j of s.jobs) {
@@ -112,7 +113,7 @@ export function ProjectList() {
       {deleting && <DeleteProjectConfirm id={deleting.id} name={deleting.name} done={() => setDeleting(null)} />}
     </>
   );
-}
+});
 
 function ProjectModal({ initial, done }: { initial?: { id: string; name: string }; done: () => void }) {
   const [v, setV] = useState(initial?.name ?? "");
@@ -179,7 +180,7 @@ function ProjectModal({ initial, done }: { initial?: { id: string; name: string 
 function DeleteProjectConfirm({ id, name, done }: { id: string; name: string; done: () => void }) {
   const deleteProject = useStudio((s) => s.deleteProject);
   const push = useToasts((s) => s.push);
-  const single = useStudio((s) => s.srvProjects.length <= 1);
+  const single = useStudio((s) => s.projects.length <= 1);
   return (
     <ConfirmDeleteDialog
       title={`Delete “${name}”?`}

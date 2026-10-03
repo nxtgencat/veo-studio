@@ -23,31 +23,35 @@ export default function ProjectTabPage() {
   const params = useParams<{ projectId: string; tab: string }>();
   const router = useRouter();
   const hydrated = useStudio((s) => s.hydrated);
-  const projects = useStudio((s) => s.projects);
+  // Existence only — never whole rows: the page must not re-render on poll
+  // ticks or composer keystrokes. Dialog open/close is a query-only
+  // navigation (no store change), so this stays stable and only the view +
+  // dialog below do work.
+  const projectId = params.projectId;
+  const projectExists = useStudio((s) => s.projects.some((p) => p.id === projectId));
   const setActiveId = useStudio((s) => s.setActiveId);
-  const ensureLoaded = useStudio((s) => s.ensureLoaded);
+  const ensureProject = useStudio((s) => s.ensureProject);
 
   const tabParsed = studioTabSchema.safeParse(params.tab);
-  const project = projects.find((p) => p.id === params.projectId);
 
   useEffect(() => {
     if (!hydrated) return;
-    if (project && useStudio.getState().activeId !== project.id) setActiveId(project.id);
-    if (params.projectId) void ensureLoaded(params.projectId);
-  }, [hydrated, project, setActiveId, ensureLoaded, params.projectId]);
+    if (projectExists && useStudio.getState().activeId !== projectId) setActiveId(projectId);
+    if (projectId) void ensureProject(projectId);
+  }, [hydrated, projectExists, setActiveId, ensureProject, projectId]);
 
   // Navigation must happen in an effect — never during render.
   useEffect(() => {
     if (!hydrated) return;
-    if (project) return;
+    if (projectExists) return;
     const fallback = useStudio.getState().projects[0];
     if (!fallback) router.replace("/");
     else router.replace(`/p/${fallback.id}/${params.tab}`);
-  }, [hydrated, project, router, params.tab]);
+  }, [hydrated, projectExists, router, params.tab]);
 
   if (tabParsed.success === false) notFound();
   if (!hydrated) return null;
-  if (!project) return null;
+  if (!projectExists) return null;
 
   return (
     <StudioShell>

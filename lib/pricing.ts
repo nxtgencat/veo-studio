@@ -2,7 +2,7 @@
 // Same export surface as before; `setCapabilities` is called once by the
 // studio store during hydrate. No mock data anywhere in this file.
 import type { Capabilities } from "@/lib/api";
-import type { Project, VideoItem } from "@/lib/schemas";
+import type { VideoItem } from "@/lib/schemas";
 import { expectedDur } from "@/lib/format";
 
 let CAPS: Capabilities | null = null;
@@ -92,11 +92,11 @@ export function priceFor(
   return r == null ? null : Math.round(r * dur * (batch || 1) * 100) / 100;
 }
 
-export const spendOf = (p: Project) =>
-  p.library.filter((v) => v.status === "success").reduce((a, v) => a + (v.cost || 0), 0);
+export const spendOf = (items: VideoItem[]) =>
+  items.filter((v) => v.status === "success").reduce((a, v) => a + (v.cost || 0), 0);
 
-export const pendingOf = (p: Project) =>
-  p.library.filter((v) => v.status === "pending").length;
+export const pendingOf = (items: VideoItem[]) =>
+  items.filter((v) => v.status === "pending").length;
 
 export function validateGen(
   g: { prompt: string; mode: string; image: string; first: string; last: string; refs: string[]; extendVideo: string },
