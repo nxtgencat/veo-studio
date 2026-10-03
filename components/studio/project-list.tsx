@@ -11,10 +11,21 @@ import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { SlateField, SlateLabel } from "@/components/slate/core";
 import { ConfirmDeleteDialog, SlateModal, SlateModalHead } from "@/components/slate/overlays";
 import { SlateTooltip } from "@/components/slate/tooltip";
-import { pendingOf } from "@/lib/pricing";
 
 export function ProjectList() {
-  const projects = useStudio((s) => s.projects);
+  // Stable server rows (array ref only changes on create/rename/delete) plus
+  // a primitive pending string — both keep their identity across poll ticks
+  // and composer keystrokes, so the sidebar list skips those re-renders.
+  // (Mapped objects would defeat shallow compare: new identities every call.)
+  const projects = useStudio((s) => s.srvProjects);
+  const pendingIds = useStudio((s) => {
+    let out = "";
+    for (const j of s.jobs) {
+      if (j.status === "queued" || j.status === "running") out += `${j.projectId},`;
+    }
+    return out;
+  });
+  const pendingCount = (id: string) => pendingIds.split(`${id},`).length - 1;
   const activeId = useStudio((s) => s.activeId);
   const params = useParams<{ tab?: string }>();
   const router = useRouter();
@@ -32,7 +43,9 @@ export function ProjectList() {
   return (
     <>
       <div className="rounded-[12px] border slate-hair overflow-hidden bg-surface">
-        {projects.map((q, i) => (
+        {projects.map((q, i) => {
+          const pending = pendingCount(q.id);
+          return (
           <div
             key={q.id}
             onClick={() => pick(q.id)}
@@ -42,10 +55,10 @@ export function ProjectList() {
               i > 0 ? "border-t slate-hair" : ""
             } ${q.id === activeId ? "bg-[var(--t-brand-bg)]" : "hover:bg-surface2"}`}
           >
-            <SlateTooltip tip={pendingOf(q) > 0 ? `${pendingOf(q)} running` : q.name}>
+            <SlateTooltip tip={pending > 0 ? `${pending} running` : q.name}>
               <span
-                className={`w-2.5 h-2.5 rounded-full shrink-0 ${pendingOf(q) > 0 ? "animate-pulse" : ""}`}
-                style={{ background: pendingOf(q) > 0 ? "#B8790E" : "var(--muted)" }}
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${pending > 0 ? "animate-pulse" : ""}`}
+                style={{ background: pending > 0 ? "#B8790E" : "var(--muted)" }}
               />
             </SlateTooltip>
             <span className="flex-1 min-w-0 truncate text-[13px] font-semibold leading-tight">{q.name}</span>
@@ -84,7 +97,8 @@ export function ProjectList() {
               )}
             />
           </div>
-        ))}
+          );
+        })}
       </div>
       <button
         type="button"
@@ -165,7 +179,7 @@ function ProjectModal({ initial, done }: { initial?: { id: string; name: string 
 function DeleteProjectConfirm({ id, name, done }: { id: string; name: string; done: () => void }) {
   const deleteProject = useStudio((s) => s.deleteProject);
   const push = useToasts((s) => s.push);
-  const single = useStudio((s) => s.projects.length <= 1);
+  const single = useStudio((s) => s.srvProjects.length <= 1);
   return (
     <ConfirmDeleteDialog
       title={`Delete “${name}”?`}

@@ -1,11 +1,12 @@
 "use client";
 
+import { memo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clapperboard, Database, Film, Lock, ScrollText, Settings2, Shapes, Wallet, WandSparkles } from "lucide-react";
 import { TABS } from "@/lib/catalog";
 import { money } from "@/lib/format";
-import { modelOf, pendingOf, spendOf } from "@/lib/pricing";
+import { modelOf, spendOf } from "@/lib/pricing";
 import { useStudio } from "@/stores/use-studio";
 import { useToasts } from "@/stores/use-ui";
 import { SlateBadge } from "@/components/slate/badge";
@@ -20,29 +21,52 @@ const TAB_ICONS: Record<string, typeof Film> = {
 
 export function StudioShell({ children }: { children: React.ReactNode }) {
   const params = useParams<{ projectId?: string; tab?: string }>();
-  const projects = useStudio((s) => s.projects);
-  // Route is the source of truth: prefer the URL project so header/sidebar
-  // can never disagree with the views (which render by params). The tab page
+  const routeId = params.projectId;
+  // Primitives only: the shell must NOT re-render on poll progress ticks or
+  // composer keystrokes. Object selectors would return new refs after every
+  // rebuild — every one of these is a stable string/number, so header,
+  // sidebar, footer and bottom bar skip unrelated updates. (The sidebar
+  // toggle stays fast for a different reason: it never depended on this
+  // store at all — it lives in SlateSidebarProvider.)
+  // Route is the source of truth for which project is shown; the tab page
   // syncs the store's activeId from the URL for mutations.
-  const storeActive = useStudio((s) => s.projects.find((x) => x.id === s.activeId) ?? s.projects[0]);
-  const active =
-    (params.projectId ? projects.find((x) => x.id === params.projectId) : undefined) ?? storeActive;
+  const storeActiveId = useStudio((s) => s.activeId);
+  const firstId = useStudio((s) => s.srvProjects[0]?.id ?? null);
+  const pid = routeId ?? storeActiveId ?? firstId;
+  const activeName = useStudio((s) => s.projects.find((x) => x.id === pid)?.name ?? "");
+  const activeSpend = useStudio((s) => {
+    const p = s.projects.find((x) => x.id === pid);
+    return p ? spendOf(p) : 0;
+  });
+  const libCount = useStudio((s) => s.projects.find((x) => x.id === pid)?.library.length ?? 0);
+  const elCount = useStudio((s) => {
+    const p = s.projects.find((x) => x.id === pid);
+    return p ? Object.values(p.elements).reduce((a, c) => a + c.length, 0) : 0;
+  });
+  const bucket = useStudio((s) => s.projects.find((x) => x.id === pid)?.settings.bucket ?? "");
+  // Model string only — the footer must not re-render on prompt keystrokes.
+  const genModel = useStudio((s) => s.projects.find((x) => x.id === pid)?.gen.model ?? "");
 
-  const totalPending = projects.reduce((a, q) => a + pendingOf(q), 0);
+  const projectCount = useStudio((s) => s.srvProjects.length);
+  const totalPending = useStudio((s) =>
+    s.jobs.reduce((a, j) => a + (j.status === "queued" || j.status === "running" ? 1 : 0), 0),
+  );
+  const firstRunningId = useStudio((s) =>
+    s.jobs.find((j) => j.status === "queued" || j.status === "running")?.projectId ?? null,
+  );
   const totals = useStudio((s) => s.totals);
   // Server truth spans never-opened projects; fall back to loaded ones first paint.
-  const totalSpend = totals?.spend ?? projects.reduce((a, q) => a + spendOf(q), 0);
-  const totalVideos = totals?.videos ?? projects.reduce((a, q) => a + q.library.length, 0);
-  const totalDelivered = totals?.delivered ?? projects.reduce(
-    (a, q) => a + q.library.filter((v) => v.status === "success").length, 0,
-  );
-  const firstRunning = projects.find((x) => pendingOf(x) > 0);
+  // Raw library rows are all successes/imports, so counts stay stable across polls.
+  const libRows = useStudio((s) => s.library.length);
+  const totalSpend = totals?.spend ?? activeSpend;
+  const totalVideos = totals?.videos ?? libRows;
+  const totalDelivered = totals?.delivered ?? libRows;
   const region = useStudio((s) => s.caps?.defaults.region ?? "us-central1");
-  const rpm = active ? modelOf(active.gen.model).quotaRpm : null;
+  const rpm = genModel ? modelOf(genModel).quotaRpm : null;
   const logout = useStudio((s) => s.logout);
   const push = useToasts((s) => s.push);
 
-  if (!active) {
+  if (!pid) {
     return (
       <div className="slate-app h-[100dvh] flex flex-col overflow-hidden">
         <header className="h-[52px] shrink-0 border-b slate-hair bg-surface flex items-center gap-2.5 px-3 sm:px-4 lg:px-6">
@@ -63,7 +87,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
         <span className="grid place-items-center w-7 h-7 rounded-[9px] bg-[#1C7247] dark:bg-[#3FA96D] text-white dark:text-[#0B1A10] shrink-0">
           <Clapperboard className="size-4" />
         </span>
-        <p className="font-display font-bold text-[14.5px] truncate min-w-0">{active.name}</p>
+        <p className="font-display font-bold text-[14.5px] truncate min-w-0">{activeName}</p>
         <span className="ml-auto flex items-center gap-2 shrink-0">
           <SlateIconButton
             variant="quiet"
@@ -77,11 +101,11 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             <Lock className="size-3.5" />
           </SlateIconButton>
           <SlateBadge tone="brand" tip="Spent in this project">
-            <Wallet className="size-3" /> {money(spendOf(active))}
+            <Wallet className="size-3" /> {money(activeSpend)}
           </SlateBadge>
-          {totalPending > 0 && firstRunning && (
+          {totalPending > 0 && firstRunningId && (
             <Link
-              href={`/p/${firstRunning.id}/library?status=pending`}
+              href={`/p/${firstRunningId}/library?status=pending`}
               className="no-underline"
             >
               <SlateTooltip tip="Active renders — jump to project">
@@ -104,14 +128,14 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
                 const on = params.tab === t.id;
                 const count =
                   t.id === "library"
-                    ? active.library.length
+                    ? libCount
                     : t.id === "elements"
-                      ? Object.values(active.elements).reduce((a, c) => a + c.length, 0)
+                      ? elCount
                       : null;
                 return (
                   <Link
                     key={t.id}
-                    href={`/p/${active.id}/${t.id}`}
+                    href={`/p/${pid}/${t.id}`}
                     className={`relative flex items-center gap-2.5 h-10 pl-3 pr-2 rounded-[10px] text-[13.5px] font-semibold w-full text-left no-underline ${
                       on ? "bg-[var(--t-brand-bg)] text-[var(--t-brand-fg)]" : "text-fg2 hover:bg-surface2"
                     }`}
@@ -133,7 +157,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             <div className="px-3 pt-2.5">
               <div className="flex items-center px-2 mb-1.5">
                 <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">
-                  Projects · {projects.length}
+                  Projects · {projectCount}
                 </p>
               </div>
               <ProjectList />
@@ -167,7 +191,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
       >
         <div className="flex items-center px-2 mb-1.5">
           <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">
-            Projects · {projects.length}
+            Projects · {projectCount}
           </p>
         </div>
         <ProjectList />
@@ -176,7 +200,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
       <footer className="shrink-0 h-9 border-t slate-hair bg-surface/90 hidden sm:flex items-center gap-4 px-4 lg:px-6 text-[11.5px] text-muted overflow-hidden whitespace-nowrap">
         <span className="hidden lg:flex items-center gap-1.5">
           <Database className="size-3.5" />
-          <span className="font-mono">{active.settings.bucket ? `gs://${active.settings.bucket}` : "no bucket"}</span>
+          <span className="font-mono">{bucket ? `gs://${bucket}` : "no bucket"}</span>
         </span>
         <span className="ml-auto hidden md:flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-[#2A8F58]" /> {region}{rpm ? ` · ${rpm} RPM / model` : " · quotas vary by model"}
@@ -193,7 +217,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
           return (
             <Link
               key={t.id}
-              href={`/p/${active.id}/${t.id}`}
+              href={`/p/${pid}/${t.id}`}
               className={`flex-1 flex flex-col items-center justify-center gap-1 min-h-[56px] px-2 text-[10.5px] font-semibold no-underline ${
                 on ? "text-[#1C7247] dark:text-[#6FC191]" : "text-fg2"
               }`}
@@ -207,7 +231,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SpendCard({ title, spend, videos, delivered }: { title: string; spend: string; videos: number; delivered: number }) {
+export const SpendCard = memo(function SpendCard({ title, spend, videos, delivered }: { title: string; spend: string; videos: number; delivered: number }) {
   return (
     <div className="rounded-[12px] border slate-hair p-3.5 slate-spend-card">
       <p className="text-[10.5px] font-bold uppercase tracking-[.1em] text-muted">{title}</p>
@@ -217,4 +241,4 @@ function SpendCard({ title, spend, videos, delivered }: { title: string; spend: 
       </p>
     </div>
   );
-}
+});

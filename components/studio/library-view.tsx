@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Clock, Film, Play, RotateCcw, SearchX, Sparkles, Upload, X } from "lucide-react";
@@ -16,6 +16,57 @@ import { SlateDropdown, SlateOption } from "@/components/slate/dropdown";
 import { PageHead, SlateEmpty, SlateProgress, SlateSegmented } from "@/components/slate/core";
 import { ModeBadge, StatusBadge, VideoCost, VideoProgress } from "@/components/studio/shared";
 import type { VideoItem } from "@/lib/schemas";
+
+/** One grid card. Memo + stable item refs (store reuses unchanged rows) means
+ *  a progress tick re-renders only the rows that actually changed. */
+const LibraryCard = memo(function LibraryCard({ v, lib, status, source, projectId }: {
+  v: VideoItem; lib: VideoItem[]; status: string; source: string; projectId: string;
+}) {
+  return (
+    <Link
+      href={`/p/${projectId}/library?status=${status}&source=${source}&video=${v.id}`}
+      className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
+    >
+      <div className="relative aspect-video bg-surface2">
+        {v.thumb ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+        ) : null}
+        {v.status === "success" && (
+          <span className="absolute inset-0 m-auto w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/55 grid place-items-center">
+            <Play className="size-4 sm:size-5 text-white ml-0.5" />
+          </span>
+        )}
+        {v.status === "pending" && (
+          <div className="absolute inset-0 bg-black/45 p-2.5 sm:p-4 flex flex-col justify-end gap-1.5">
+            <SlateProgress value={v.progress || 5} />
+            <VideoProgress v={v} trail="" className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums" />
+          </div>
+        )}
+        <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 hidden min-[420px]:inline-flex">
+          <ModeBadge mode={v.mode} />
+        </span>
+        <SlateBadge tone="draft" className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 tabular-nums">
+          {fmtDurPair(expectedDurOf(v, lib), v.durActual)} · {v.res}
+        </SlateBadge>
+        {v.status !== "pending" && (
+          <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" tip={fullTs(v.createdAt)}>
+            <Clock className="size-3" /> {ago(v.createdAt)}
+          </SlateBadge>
+        )}
+      </div>
+      <div className="p-2 sm:p-3">
+        <p className="text-[12px] sm:text-[13px] font-semibold leading-snug line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {v.prompt || "Untitled"}
+        </p>
+        <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
+          <StatusBadge status={v.status} />
+          <VideoCost v={v} className="text-[11px] sm:text-[12px] font-mono text-fg2" />
+        </div>
+      </div>
+    </Link>
+  );
+});
 
 export function LibraryView() {
   const params = useParams<{ projectId: string }>();
@@ -209,49 +260,7 @@ export function LibraryView() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-2.5 sm:gap-3">
           {list.map((v) => (
-            <Link
-              key={v.id}
-              href={`/p/${projectId}/library?status=${state.status}&source=${state.source}&video=${v.id}`}
-              className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
-            >
-              <div className="relative aspect-video bg-surface2">
-                {v.thumb ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
-                ) : null}
-                {v.status === "success" && (
-                  <span className="absolute inset-0 m-auto w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/55 grid place-items-center">
-                    <Play className="size-4 sm:size-5 text-white ml-0.5" />
-                  </span>
-                )}
-                {v.status === "pending" && (
-                  <div className="absolute inset-0 bg-black/45 p-2.5 sm:p-4 flex flex-col justify-end gap-1.5">
-                    <SlateProgress value={v.progress || 5} />
-                    <VideoProgress v={v} trail="" className="text-white text-[10.5px] sm:text-[11px] font-bold tabular-nums" />
-                  </div>
-                )}
-                <span className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 hidden min-[420px]:inline-flex">
-                  <ModeBadge mode={v.mode} />
-                </span>
-                <SlateBadge tone="draft" className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 tabular-nums">
-                  {fmtDurPair(expectedDurOf(v, project.library), v.durActual)} · {v.res}
-                </SlateBadge>
-                {v.status !== "pending" && (
-                  <SlateBadge tone="draft" className="absolute bottom-1.5 left-1.5 !h-[20px] !text-[10.5px] tabular-nums" tip={fullTs(v.createdAt)}>
-                    <Clock className="size-3" /> {ago(v.createdAt)}
-                  </SlateBadge>
-                )}
-              </div>
-              <div className="p-2 sm:p-3">
-                <p className="text-[12px] sm:text-[13px] font-semibold leading-snug line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                  {v.prompt || "Untitled"}
-                </p>
-                <div className="mt-1.5 sm:mt-2 flex items-center justify-between gap-2">
-                  <StatusBadge status={v.status} />
-                  <VideoCost v={v} className="text-[11px] sm:text-[12px] font-mono text-fg2" />
-                </div>
-              </div>
-            </Link>
+            <LibraryCard key={v.id} v={v} lib={project.library} status={state.status} source={state.source} projectId={projectId} />
           ))}
         </div>
       )}

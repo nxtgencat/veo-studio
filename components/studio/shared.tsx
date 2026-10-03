@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import {
   CircleCheck, CircleX, Columns2, Film, Image, Layers,
   Loader2, StretchHorizontal, Type, type LucideIcon,
@@ -26,7 +27,7 @@ const MODE_LABEL: Record<string, [string, string]> = {
   extend: ["Extend", "stretch-horizontal"],
 };
 
-export function StatusBadge({ status }: { status: string }) {
+export const StatusBadge = memo(function StatusBadge({ status }: { status: string }) {
   if (status === "success")
     return (
       <SlateBadge tone="ok">
@@ -44,19 +45,19 @@ export function StatusBadge({ status }: { status: string }) {
       <Loader2 className="size-3" /> Pending
     </SlateBadge>
   );
-}
+});
 
-export function ModeBadge({ mode }: { mode: string }) {
+export const ModeBadge = memo(function ModeBadge({ mode }: { mode: string }) {
   const [label, icon] = MODE_LABEL[mode] ?? [mode, "film"];
   return (
     <SlateBadge tone="info">
       <ModeIcon name={icon} className="size-3" /> {label}
     </SlateBadge>
   );
-}
+});
 
 /** Pending-job progress line: lead · countdown · elapsed, with ETA-source tip. */
-export function VideoProgress({ v, lead, trail = " elapsed", className }: {
+export const VideoProgress = memo(function VideoProgress({ v, lead, trail = " elapsed", className }: {
   v: VideoItem; lead?: React.ReactNode; trail?: string; className?: string;
 }) {
   return (
@@ -66,10 +67,10 @@ export function VideoProgress({ v, lead, trail = " elapsed", className }: {
       </p>
     </SlateTooltip>
   );
-}
+});
 
 /** Cost with pending estimate + failed strikethrough + explanatory tip. */
-export function VideoCost({ v, className }: { v: VideoItem; className?: string }) {
+export const VideoCost = memo(function VideoCost({ v, className }: { v: VideoItem; className?: string }) {
   return (
     <SlateTooltip tip={v.status === "pending" ? "Expected cost — debited on success" : v.status === "failed" ? "Would-be cost — not billed" : undefined}>
       <span className={className ?? "font-mono text-[12px] text-fg2"}>
@@ -77,4 +78,4 @@ export function VideoCost({ v, className }: { v: VideoItem; className?: string }
       </span>
     </SlateTooltip>
   );
-}
+});

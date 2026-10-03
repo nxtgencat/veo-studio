@@ -250,7 +250,74 @@ interface StudioState {
   saveSettings: (patch: Partial<Project["settings"]>) => Promise<void>;
 }
 
+function sameStrArr(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((x, i) => x === b[i]);
+}
+
+/** Flat composer draft equality — lets rebuild reuse the previous ref when
+ *  a poll (not the user) triggered it, so typing views don't re-render. */
+function sameGen(a: GenDraft, b: GenDraft): boolean {
+  return (
+    a === b ||
+    (a.mode === b.mode && a.model === b.model && a.res === b.res &&
+      a.aspect === b.aspect && a.dur === b.dur && a.audio === b.audio &&
+      a.batch === b.batch && String(a.seed) === String(b.seed) &&
+      a.person === b.person && a.enhance === b.enhance &&
+      a.negativePrompt === b.negativePrompt && a.prompt === b.prompt &&
+      a.image === b.image && a.first === b.first && a.last === b.last &&
+      a.extendVideo === b.extendVideo && sameStrArr(a.refs, b.refs))
+  );
+}
+
+function sameInputs(a: VideoItem["inputs"], b: VideoItem["inputs"]): boolean {
+  return (
+    a === b ||
+    (a.image === b.image && a.first === b.first && a.last === b.last &&
+      a.extendVideo === b.extendVideo && sameStrArr(a.refs, b.refs))
+  );
+}
+
+/** Render-relevant equality for one library row. youtube is compared by
+ *  reference — setYoutube allocates a new object only for the edited video. */
+function sameVideoItem(a: VideoItem, b: VideoItem): boolean {
+  return (
+    a === b ||
+    (a.id === b.id && a.jobId === b.jobId && a.mode === b.mode &&
+      a.prompt === b.prompt && a.model === b.model && a.res === b.res &&
+      a.aspect === b.aspect && a.dur === b.dur && a.durActual === b.durActual &&
+      a.size === b.size && a.audio === b.audio && String(a.seed) === String(b.seed) &&
+      a.person === b.person && a.enhance === b.enhance && a.batch === b.batch &&
+      a.status === b.status && a.progress === b.progress && a.cost === b.cost &&
+      a.createdAt === b.createdAt && a.thumb === b.thumb && a.url === b.url &&
+      a.imported === b.imported && a.error === b.error &&
+      a.elapsedMs === b.elapsedMs && a.etaMs === b.etaMs && a.etaSource === b.etaSource &&
+      a.negativePrompt === b.negativePrompt && a.youtube === b.youtube &&
+      sameInputs(a.inputs, b.inputs))
+  );
+}
+
+function sameElArr(a: ElementItem[], b: ElementItem[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    return x.id === y.id && x.name === y.name && x.img === y.img && x.note === y.note;
+  });
+}
+
+function sameSettings(a: Project["settings"], b: Project["settings"]): boolean {
+  return (
+    a === b ||
+    (a.saJson === b.saJson && a.bucket === b.bucket && a.useBucket === b.useBucket &&
+      a.authMode === b.authMode && a.ytClientId === b.ytClientId &&
+      a.ytPrivacy === b.ytPrivacy && a.ytCategory === b.ytCategory)
+  );
+}
+
 function buildProjects(
+  prev: Project[],
   srv: SrvProject[],
   elements: ServerElement[],
   library: ServerVideo[],
@@ -258,16 +325,27 @@ function buildProjects(
   srvSettings: Record<string, ServerSettings>,
   local: LocalOverlays,
 ): Project[] {
-  return srv.map((p) => {
+  const prevById = new Map(prev.map((p) => [p.id, p]));
+  const next = srv.map((p) => {
+    const prior = prevById.get(p.id);
     const els = elements.filter((e) => e.project_id === p.id);
     const libs = library.filter((v) => v.project_id === p.id);
     const pjobs = jobs.filter((j) => j.projectId === p.id);
-    const items: VideoItem[] = [
+    const fresh: VideoItem[] = [
       ...libs.map((v) => toVideoItem(v, els, local.youtube)),
       ...pjobs
         .filter((j) => j.status === "queued" || j.status === "running" || j.status === "failed" || j.status === "cancelled")
         .map((j) => jobToVideoItem(j, els)),
     ].sort((a, b) => b.createdAt - a.createdAt);
+    // Reuse item refs (and the whole array) when nothing render-relevant changed.
+    let items = prior?.library;
+    if (!items || items.length !== fresh.length || fresh.some((v, i) => !sameVideoItem(v, items![i]))) {
+      if (prior && prior.library.length === fresh.length) {
+        items = fresh.map((v, i) => (sameVideoItem(v, prior.library[i]) ? prior.library[i] : v));
+      } else {
+        items = fresh;
+      }
+    }
     const grouped: Project["elements"] = { characters: [], locations: [], assets: [], frames: [] };
     for (const e of els) {
       const item: ElementItem = { id: e.id, name: e.name, img: e.image_url, note: e.note };
@@ -275,31 +353,82 @@ function buildProjects(
         grouped[e.category].push(item);
       }
     }
+    const gen = local.drafts[p.id] ?? prior?.gen ?? defaultGen();
     // Server owns auth/bucket; browser keeps YouTube OAuth bits. SA key never
     // comes back down — hasSaJson/saEmail tell the UI what's configured.
     const srvCfg = srvSettings[p.id];
     const yt = local.settings[p.id];
+    const settings: Project["settings"] = {
+      saJson: "",
+      bucket: srvCfg?.bucket ?? "",
+      useBucket: srvCfg?.useBucket ?? true,
+      authMode: srvCfg?.authMode ?? "service_account",
+      // YouTube publish config: server truth once loaded, local cache before that.
+      ytClientId: srvCfg?.ytClientId ?? yt?.ytClientId ?? "",
+      ytPrivacy: srvCfg?.ytPrivacy ?? yt?.ytPrivacy ?? "unlisted",
+      ytCategory: srvCfg?.ytCategory ?? yt?.ytCategory ?? "22",
+    };
+    if (
+      prior && prior.name === p.name && prior.createdAt === p.createdAt &&
+      sameGen(gen, prior.gen) && items === prior.library &&
+      sameElArr(grouped.characters, prior.elements.characters) &&
+      sameElArr(grouped.locations, prior.elements.locations) &&
+      sameElArr(grouped.assets, prior.elements.assets) &&
+      sameElArr(grouped.frames, prior.elements.frames) &&
+      sameSettings(settings, prior.settings)
+    ) {
+      return prior;
+    }
     return {
       id: p.id,
       name: p.name,
       createdAt: p.createdAt,
-      gen: local.drafts[p.id] ?? defaultGen(),
+      gen,
       library: items,
-      elements: grouped,
-      settings: {
-        saJson: "",
-        bucket: srvCfg?.bucket ?? "",
-        useBucket: srvCfg?.useBucket ?? true,
-        authMode: srvCfg?.authMode ?? "service_account",
-        // YouTube publish config: server truth once loaded, local cache before that.
-        ytClientId: srvCfg?.ytClientId ?? yt?.ytClientId ?? "",
-        ytPrivacy: srvCfg?.ytPrivacy ?? yt?.ytPrivacy ?? "unlisted",
-        ytCategory: srvCfg?.ytCategory ?? yt?.ytCategory ?? "22",
-      },
+      elements: prior && sameElArr(grouped.characters, prior.elements.characters) &&
+        sameElArr(grouped.locations, prior.elements.locations) &&
+        sameElArr(grouped.assets, prior.elements.assets) &&
+        sameElArr(grouped.frames, prior.elements.frames)
+        ? prior.elements : grouped,
+      settings: prior && sameSettings(settings, prior.settings) ? prior.settings : settings,
     };
   });
+  // Whole-array stability: unchanged projects keep the previous array ref, so
+  // whole-store subscribers (sidebar, lists) skip poll ticks entirely.
+  if (prev.length === next.length && next.every((p, i) => p === prev[i])) return prev;
+  return next;
 }
 
+/** Jobs-side change detection for the light poll: only fields the UI renders. */
+function sameJobRow(a: ServerJob, b: ServerJob): boolean {
+  return (
+    a.id === b.id && a.status === b.status && a.progress === b.progress &&
+    a.error === b.error && a.costEstimate === b.costEstimate &&
+    a.elapsedMs === b.elapsedMs && a.etaMs === b.etaMs &&
+    a.updatedAt === b.updatedAt
+  );
+}
+
+/** Library-side change detection. Thumb data URLs can be ~100KB — compare
+ *  length + updated_at instead of the bytes, so the check stays O(1) per row. */
+function sameLibraryRow(a: ServerVideo, b: ServerVideo): boolean {
+  return (
+    a.id === b.id && a.updated_at === b.updated_at &&
+    a.video_url === b.video_url && a.thumb_url.length === b.thumb_url.length &&
+    a.bytes === b.bytes && a.cost_estimate === b.cost_estimate &&
+    a.actual_duration_seconds === b.actual_duration_seconds
+  );
+}
+
+function rowsSame<T>(prev: T[], next: T[], same: (a: T, b: T) => boolean): boolean {
+  if (prev.length !== next.length) return false;
+  const byId = new Map<string, T>();
+  for (const r of next) byId.set((r as { id: string }).id, r);
+  return prev.every((r) => {
+    const n = byId.get((r as { id: string }).id);
+    return n !== undefined && same(r, n);
+  });
+}
 export const useStudio = create<StudioState>()((set, get) => {
   let local = loadLocal();
   const loaded = new Set<string>();
@@ -308,12 +437,44 @@ export const useStudio = create<StudioState>()((set, get) => {
   let hydrating: Promise<void> | null = null;
 
   const persist = () => saveLocal(local);
+  // Keystroke-path writes are throttled: drafts can hold multi-MB image data
+  // URLs, and JSON.stringify on every keystroke blocked the main thread while
+  // polls were in flight. First change writes through; bursts get 1 write/500ms.
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastPersist = 0;
+  const schedulePersist = () => {
+    const now = Date.now();
+    if (now - lastPersist > 500) {
+      lastPersist = now;
+      persist();
+      return;
+    }
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      lastPersist = Date.now();
+      persist();
+    }, 500);
+  };
 
   const rebuild = (patch: Partial<StudioState>) => {
     const s = get();
-    const projects = buildProjects(s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local);
+    const projects = buildProjects(s.projects, s.srvProjects, s.elements, s.library, s.jobs, s.srvSettings, local);
     set({ ...patch, projects });
   };
+
+  /** Idle-deferred: thumbnail capture needs video decode + canvas on the main
+   *  thread — never inside the poll/fetch critical path. */
+  function idleBackfill(projectId: string) {
+    const run = () => {
+      void backfillThumbs(projectId).catch(() => {});
+    };
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void;
+    };
+    if (typeof w.requestIdleCallback === "function") w.requestIdleCallback(run, { timeout: 8000 });
+    else setTimeout(run, 2000);
+  }
 
   async function fetchScope(projectId: string) {
     const [els, libs, jobs, cfgResp, totals] = await Promise.all([
@@ -338,8 +499,8 @@ export const useStudio = create<StudioState>()((set, get) => {
     });
     loaded.add(projectId);
     rebuild({});
-    // Fire-and-forget: playable successes without thumbs get browser captures.
-    void backfillThumbs(projectId).catch(() => {});
+    // Fire-and-forget off the critical path (see idleBackfill).
+    idleBackfill(projectId);
   }
 
   // Capture real thumbnails for succeeded videos missing them. Browser-only
@@ -347,6 +508,7 @@ export const useStudio = create<StudioState>()((set, get) => {
   // Any playable url counts: local /api/media/… as well as direct http(s).
   // gs://-only rows map to url="" and are skipped (nothing playable to grab).
   let backfilling = false;
+  let polling = false;
   async function backfillThumbs(projectId: string) {
     if (backfilling) return;
     backfilling = true;
@@ -498,11 +660,29 @@ export const useStudio = create<StudioState>()((set, get) => {
       const s = get();
       const id = s.activeId;
       if (!id || !s.hydrated) return;
-      const active = s.projects.find((p) => p.id === id);
-      if (!active || !active.library.some((v) => v.status === "pending")) return;
+      // Raw jobs first: cheaper than scanning derived projects, and stable.
+      if (!s.jobs.some((j) => j.projectId === id && (j.status === "queued" || j.status === "running"))) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (polling) return;
+      polling = true;
       try {
-        await fetchScope(id);
+        // Light delta: only jobs + library change under a render. Elements,
+        // settings and stats are untouched by polling — the old fetchScope
+        // re-downloaded all five (including ~100KB thumb data URLs) every 3s.
+        const [jobs, libs] = await Promise.all([api.listJobs(id), api.listLibrary(id)]);
+        const cur = get();
+        const prevJobs = cur.jobs.filter((j) => j.projectId === id);
+        const prevLib = cur.library.filter((v) => v.project_id === id);
+        if (rowsSame(prevJobs, jobs.jobs, sameJobRow) && rowsSame(prevLib, libs.videos, sameLibraryRow)) {
+          return; // unchanged progress tick — zero set() calls, zero re-renders
+        }
+        set({
+          jobs: [...cur.jobs.filter((j) => j.projectId !== id), ...jobs.jobs],
+          library: [...cur.library.filter((v) => v.project_id !== id), ...libs.videos],
+        });
+        rebuild({});
       } catch { /* next tick retries */ }
+      finally { polling = false; }
     },
 
     activeProject: () => {
@@ -548,7 +728,7 @@ export const useStudio = create<StudioState>()((set, get) => {
       if (draft.gen.mode === "r2v") draft.gen.dur = 8;
       if (m.silent) draft.gen.audio = false;
       local.drafts[activeId] = draft.gen;
-      persist();
+      schedulePersist();
       rebuild({});
       return { ok: true };
     },
@@ -836,7 +1016,7 @@ export const useStudio = create<StudioState>()((set, get) => {
       if (gen.mode === "r2v") gen.dur = 8;
       if (m.silent) gen.audio = false;
       local.drafts[p.id] = gen;
-      persist();
+      schedulePersist();
       rebuild({});
       return { ok: true, missing };
     },
@@ -898,7 +1078,7 @@ export const useStudio = create<StudioState>()((set, get) => {
 
     setYoutube: (videoId, patch) => {
       local.youtube[videoId] = { ...(local.youtube[videoId] ?? {}), ...patch };
-      persist();
+      schedulePersist();
       rebuild({});
     },
 
@@ -942,7 +1122,7 @@ export const useStudio = create<StudioState>()((set, get) => {
       }
       if (Object.keys(ytPatch).length > 0) {
         local.settings[id] = { ...(local.settings[id] ?? defaultSettings()), ...ytPatch };
-        persist();
+        schedulePersist();
       }
       rebuild({});
     },

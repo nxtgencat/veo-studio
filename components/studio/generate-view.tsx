@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
@@ -19,6 +19,65 @@ import { SlateDropdown, SlateMenuRow, SlateOption } from "@/components/slate/dro
 import { SlateTooltip } from "@/components/slate/tooltip";
 import { PageHead } from "@/components/slate/core";
 import { ModeBadge, ModeIcon, StatusBadge, VideoProgress } from "@/components/studio/shared";
+import type { VideoItem } from "@/lib/schemas";
+
+/** One recents card. Memo + stable item refs: progress ticks re-render only
+ *  the rows that actually changed, not the whole thread. */
+const RecentCard = memo(function RecentCard({ v, lib, projectId }: {
+  v: VideoItem; lib: VideoItem[]; projectId: string;
+}) {
+  return (
+    <Link
+      href={`/p/${projectId}/generate?video=${v.id}`}
+      className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
+    >
+      <div className="flex gap-3 p-3 min-w-0">
+        <span className="w-[96px] min-[420px]:w-[120px] sm:w-[168px] aspect-video rounded-[8px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {v.thumb ? (
+            <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
+          ) : (
+            <span className="absolute inset-0 grid place-items-center text-muted">
+              <Play className="size-5 opacity-40" />
+            </span>
+          )}
+          {v.status === "success" && (
+            <span className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-black/55 grid place-items-center">
+              <Play className="size-4 text-white ml-0.5" />
+            </span>
+          )}
+          {v.status === "failed" && (
+            <span className="absolute inset-0 grid place-items-center bg-black/55">
+              <CircleX className="size-5 text-white" />
+            </span>
+          )}
+        </span>
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <ModeBadge mode={v.mode} />
+            <StatusBadge status={v.status} />
+            <SlateBadge tone="draft">{fmtDurPair(expectedDurOf(v, lib), v.durActual)} · {v.res}</SlateBadge>
+          </div>
+          <p className="text-[13px] font-semibold leading-snug mt-1.5 break-words line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {v.prompt || "Untitled"}
+          </p>
+          {v.status === "pending" ? (
+            <>
+              <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
+              <VideoProgress v={v} lead={`${money(v.cost)} est.`} />
+            </>
+          ) : (
+            <SlateTooltip tip={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
+              <p className="text-[11.5px] font-mono text-muted mt-1.5">
+                {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : v.status === "failed" ? (<><s>{money(v.cost)}</s> · {(v.error || "failed").slice(0, 90)}</>) : (v.error || "failed").slice(0, 90)}
+              </p>
+            </SlateTooltip>
+          )}
+        </div>
+      </div>
+    </Link>
+  );
+});
 
 function SlotBox({
   img, emptyLabel, emptyIcon, onPick, onClear, tag,
@@ -212,56 +271,7 @@ export function GenerateView() {
               />
             </div>
             {recents.map((v) => (
-              <Link
-                key={v.id}
-                href={`/p/${projectId}/generate?video=${v.id}`}
-                className="slate-card overflow-hidden cursor-pointer hover:border-[#3FA96D] no-underline text-inherit"
-              >
-                <div className="flex gap-3 p-3 min-w-0">
-                  <span className="w-[96px] min-[420px]:w-[120px] sm:w-[168px] aspect-video rounded-[8px] overflow-hidden border slate-hair shrink-0 bg-surface2 relative">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    {v.thumb ? (
-                      <img src={v.thumb} className="absolute inset-0 w-full h-full object-cover" alt="" loading="lazy" />
-                    ) : (
-                      <span className="absolute inset-0 grid place-items-center text-muted">
-                        <Play className="size-5 opacity-40" />
-                      </span>
-                    )}
-                    {v.status === "success" && (
-                      <span className="absolute inset-0 m-auto w-8 h-8 rounded-full bg-black/55 grid place-items-center">
-                        <Play className="size-4 text-white ml-0.5" />
-                      </span>
-                    )}
-                    {v.status === "failed" && (
-                      <span className="absolute inset-0 grid place-items-center bg-black/55">
-                        <CircleX className="size-5 text-white" />
-                      </span>
-                    )}
-                  </span>
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <ModeBadge mode={v.mode} />
-                      <StatusBadge status={v.status} />
-                      <SlateBadge tone="draft">{fmtDurPair(expectedDurOf(v, project.library), v.durActual)} · {v.res}</SlateBadge>
-                    </div>
-                    <p className="text-[13px] font-semibold leading-snug mt-1.5 break-words line-clamp-2" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                      {v.prompt || "Untitled"}
-                    </p>
-                    {v.status === "pending" ? (
-                      <>
-                        <div className="slate-prog mt-2"><div style={{ width: `${v.progress || 5}%` }} /></div>
-                        <VideoProgress v={v} lead={`${money(v.cost)} est.`} />
-                      </>
-                    ) : (
-                      <SlateTooltip tip={v.status === "failed" ? "Would-be cost — not billed" : undefined}>
-                        <p className="text-[11.5px] font-mono text-muted mt-1.5">
-                          {v.status === "success" ? `${money(v.cost)} · ${modelOf(v.model).label}` : v.status === "failed" ? (<><s>{money(v.cost)}</s> · {(v.error || "failed").slice(0, 90)}</>) : (v.error || "failed").slice(0, 90)}
-                        </p>
-                      </SlateTooltip>
-                    )}
-                  </div>
-                </div>
-              </Link>
+              <RecentCard key={v.id} v={v} lib={project.library} projectId={projectId} />
             ))}
           </>
         )}
